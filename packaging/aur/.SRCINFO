@@ -1,0 +1,25 @@
+pkgbase = sobornost-git
+	pkgdesc = Linux-native EVE Online client preview and switcher
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/yourusername/sobornost
+	arch = x86_64
+	license = MIT
+	makedepends = python-build
+	makedepends = python-installer
+	makedepends = python-setuptools
+	makedepends = python-wheel
+	makedepends = git
+	makedepends = libxcb
+	makedepends = xcb-util
+	makedepends = xcb-util-image
+	makedepends = xcb-util-keysyms
+	makedepends = xcb-util-wm
+	depends = python
+	depends = python-pillow
+	provides = sobornost
+	conflicts = sobornost
+	source = sobornost::git+https://github.com/yourusername/sobornost
+	sha256sums = SKIP
+
+pkgname = sobornost-git

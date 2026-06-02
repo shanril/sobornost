@@ -1,0 +1,17 @@
+.venv/
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.so
+*.dylib
+uv.lock
+AGENTS.md
+opencode.json
+packaging/sobornost.app/Contents/MacOS/
+
+
