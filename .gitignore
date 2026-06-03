@@ -1,9 +1,12 @@
 .venv/
+.claude/
+.vscode/
 build/
 dist/
 *.egg-info/
 .mypy_cache/
 .ruff_cache/
+.pytest_cache/
 __pycache__/
 *.pyc
 *.pyo

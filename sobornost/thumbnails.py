@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import tkinter as tk
 
 from PIL import ImageDraw, ImageFont, ImageOps, ImageTk
 
-from sobornost import _native, switcher
+from sobornost import switcher
 from sobornost.capturer import capture_thumbnail
+
+logger = logging.getLogger(__name__)
 
 
 class ThumbnailWindow:
@@ -109,18 +112,19 @@ class ThumbnailWindow:
         self._active = active
         self._refresh_thumbnail()
 
+    def update_title(self, title: str):
+        """Update the cached window title and reposition if the per-client key
+        changed. Driven by the ~2s client-refresh (which already has fresh
+        titles from list_windows), so we no longer query the title per frame."""
+        if title and title != self.title:
+            old_key = self._pos_key()
+            self.title = title
+            if self._pos_key() != old_key:
+                self._update_geometry()
+
     def refresh(self):
         if self._destroyed:
             return
-        try:
-            title = _native.get_window_title(self.wid)
-            if title and title != self.title:
-                old_key = self._pos_key()
-                self.title = title
-                if self._pos_key() != old_key:
-                    self._update_geometry()
-        except Exception:
-            pass
         self._refresh_thumbnail()
 
     def _refresh_thumbnail(self):

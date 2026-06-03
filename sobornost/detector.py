@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from sobornost import _native
 
+# EVE Online client windows always have titles beginning with "EVE".
+EVE_TITLE_FILTER = "EVE"
+# The launcher matches the title filter above but is not a game client,
+# so it is always excluded.
+LAUNCHER_EXCLUDE = "EVE Launcher"
+
 
 class Client:
     def __init__(self, wid: int, title: str, pid: int, wm_class: str | None = None):
@@ -14,7 +20,10 @@ class Client:
         return f"Client(wid={self.wid}, title={self.title!r})"
 
 
-def detect_clients(title_filter: str = "EVE", exclude_filter: str = "EVE Launcher") -> list[Client]:
+def detect_clients(
+    title_filter: str = EVE_TITLE_FILTER,
+    exclude_filter: str = LAUNCHER_EXCLUDE,
+) -> list[Client]:
     windows = _native.list_windows(title_filter, False)
     if not windows:
         return []

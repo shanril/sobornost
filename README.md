@@ -13,11 +13,11 @@ Licensed under MIT.
 - **Draggable previews** — reposition thumbnails by dragging; positions persist per client
 - **Zoom on hover** — hover a thumbnail for a larger preview
 - **Always on top** — thumbnails stay above game windows
-- **Settings UI** — thumbnail size, opacity, refresh rate, highlight color, window title filter
+- **Settings UI** — thumbnail size, opacity, refresh rate, highlight color, switch hotkey
 - **JSON config** — settings saved to `~/.config/sobornost/config.json`
 - **Undecorated windows** — borderless preview windows
 - **Ctrl+Click minimize** — minimize an EVE client from its thumbnail
-- **Window title filtering** — configurable filter string for client detection (default: `EVE`)
+- **Automatic client detection** — windows whose title starts with `EVE` are detected; the `EVE Launcher` is always excluded
 
 ## Requirements
 
@@ -129,10 +129,15 @@ make run          # build + open
 make dev          # run directly (no .app)
 make lint         # ruff check
 make typecheck    # mypy
+make test         # pytest (native ext is stubbed — see tests/conftest.py)
 make clean        # remove build artifacts
 
 # Or run with uv directly
 uv run python -m sobornost
+uv run pytest
+
+# Logging verbosity (default INFO)
+SOBORNOST_LOG_LEVEL=DEBUG uv run python -m sobornost
 
 # Code structure
 sobornost/
@@ -148,6 +153,9 @@ sobornost/
 ├── switcher.py          # Window focus/minimize
 ├── thumbnails.py        # Preview windows
 └── ui.py                # Settings GUI (ttk Notebook)
+
+tests/                   # pytest suite (config, keycodes, detector)
+└── conftest.py          # stubs the native _native ext so tests need no build
 ```
 
 ## License

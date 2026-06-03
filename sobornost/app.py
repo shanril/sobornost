@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import logging
 import platform
 import subprocess
-import sys
 import tkinter as tk
 
 from sobornost import _native
 from sobornost._keycodes import describe_hotkey, hotkey_to_carbon
 from sobornost.config import Config
-from sobornost.detector import detect_clients
+from sobornost.detector import EVE_TITLE_FILTER, detect_clients
 from sobornost.switcher import focus_client
 from sobornost.thumbnails import ThumbnailWindow
 from sobornost.ui import SettingsWindow
+
+logger = logging.getLogger(__name__)
 
 
 class SobornostApp:
@@ -32,11 +34,10 @@ class SobornostApp:
         self.root.title("sobornost")
         self.root.withdraw()
         if platform.system() == "Darwin":
-            print("[sobornost] macOS: dock icon visible (click to open settings)", file=sys.stderr)
+            logger.info("macOS: dock icon visible (click to open settings)")
             self.root.createcommand("::tk::mac::OnReopen", self._open_settings)
             if hasattr(_native, "is_accessibility_trusted"):
-                trusted = _native.is_accessibility_trusted()
-                print(f"[sobornost] Accessibility trusted: {trusted}", file=sys.stderr)
+                logger.info("Accessibility trusted: %s", _native.is_accessibility_trusted())
         self._macos_topmost_count = 0
 
         self.thumbnails: dict[int, ThumbnailWindow] = {}
@@ -47,6 +48,7 @@ class SobornostApp:
         self._drag_paused = 0
         self._client_pids: set[int] = set()
         self._idle_skip_count = 0
+        self._logged_no_windows = False
 
         self._setup_menu()
         self._refresh_clients()
@@ -65,35 +67,27 @@ class SobornostApp:
         self.menubar.add_cascade(label="File", menu=file_menu)
 
     def _refresh_clients(self):
-        title_filter = "EVE"
-        clients = detect_clients(title_filter, "EVE Launcher")
-        print(f"[sobornost] Found {len(clients)} matching client(s)", file=sys.stderr)
+        clients = detect_clients()
+        logger.debug("Found %d matching client(s)", len(clients))
+
+        # The capture path caches the (expensive) system window enumeration;
+        # drop it on each client refresh so it re-enumerates at most every ~2s
+        # rather than per frame.
+        if hasattr(_native, "invalidate_capture_cache"):
+            _native.invalidate_capture_cache()
 
         if not clients:
             if platform.system() == "Darwin":
-                # check if EVE process is running at all
-                try:
-                    r = subprocess.run(
-                        ["pgrep", "-if", "EVE"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    if r.returncode == 0:
-                        pids = r.stdout.strip().splitlines()
-                        print(f"[sobornost]   EVE process IS running (pids: {', '.join(pids)})", file=sys.stderr)
-                        print("[sobornost]   but no windows visible from CLI context.", file=sys.stderr)
-                        print("[sobornost]   Grant Screen Recording permission to", file=sys.stderr)
-                        print("[sobornost]     Terminal/iTerm2 in: Settings → Privacy & Security", file=sys.stderr)
-                        print("[sobornost]   Then relaunch or package as .app with entitlements.", file=sys.stderr)
-                    else:
-                        print("[sobornost]   No EVE process found running.", file=sys.stderr)
-                except Exception as exc:
-                    print(f"[sobornost]   pgrep failed: {exc}", file=sys.stderr)
+                self._diagnose_no_windows()
+        else:
+            # Reset so the diagnostic is emitted again if clients later vanish.
+            self._logged_no_windows = False
 
         current_wids = set()
         for c in clients:
             current_wids.add(c.wid)
             if c.wid not in self.thumbnails:
-                print(f"[sobornost]   Adding client: wid={c.wid}, title=\"{c.title}\"", file=sys.stderr)
+                logger.info("Adding client: wid=%s title=%r", c.wid, c.title)
                 tw = ThumbnailWindow(
                     root=self.root,
                     app=self,
@@ -106,10 +100,14 @@ class SobornostApp:
                 damage_id = _native.create_damage(c.wid)
                 if damage_id >= 0:
                     self.client_damage[c.wid] = damage_id
+            else:
+                # Refresh the title here (titles come from list_windows) instead
+                # of querying get_window_title per frame.
+                self.thumbnails[c.wid].update_title(c.title)
 
         wids_to_remove = set(self.thumbnails.keys()) - current_wids
         for wid in wids_to_remove:
-            print(f"[sobornost]   Removing client: wid={wid}", file=sys.stderr)
+            logger.info("Removing client: wid=%s", wid)
             self.thumbnails[wid].destroy()
             del self.thumbnails[wid]
             damage_id = self.client_damage.pop(wid, -1)
@@ -118,6 +116,36 @@ class SobornostApp:
             self.dirty_wids.discard(wid)
 
         self._client_pids = {c.pid for c in clients}
+
+    def _diagnose_no_windows(self):
+        """Explain (once) why no client windows were found on macOS.
+
+        Runs on every refresh while no clients are visible, but the guidance is
+        static, so we emit it only once per "dry spell" to avoid log spam.
+        """
+        if self._logged_no_windows:
+            return
+        self._logged_no_windows = True
+        try:
+            r = subprocess.run(
+                ["pgrep", "-if", EVE_TITLE_FILTER],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            logger.warning("pgrep failed while checking for EVE process", exc_info=True)
+            return
+
+        if r.returncode == 0:
+            pids = ", ".join(r.stdout.strip().splitlines())
+            logger.warning(
+                "EVE process IS running (pids: %s) but no windows are visible from "
+                "this context. Grant Screen Recording permission to your terminal "
+                "(Settings → Privacy & Security), then relaunch — or package as a "
+                ".app with entitlements.",
+                pids,
+            )
+        else:
+            logger.warning("No EVE process found running.")
 
     def _setup_thumbnail_x11(self, tw: ThumbnailWindow, wid: int):
         # On macOS, winfo_id() returns a MacDrawable pointer, not a
@@ -130,11 +158,11 @@ class SobornostApp:
         try:
             level = _native.set_always_on_top(tw.win.title(), True)
             if level is False:
-                print(f"[sobornost]   WARN: _native.set_always_on_top failed for \"{tw.win.title()}\"", file=sys.stderr)
+                logger.warning("set_always_on_top failed for %r", tw.win.title())
             else:
-                print(f"[sobornost]   Thumbnail window level: {level}", file=sys.stderr)
+                logger.debug("Thumbnail window level: %s", level)
         except tk.TclError:
-            pass
+            logger.debug("set_thumbnail_level: window gone for wid=%s", wid, exc_info=True)
 
     def _set_active_client(self, wid: int | None):
         self.active_client_wid = wid
@@ -148,20 +176,17 @@ class SobornostApp:
                 self.config.hotkey_key,
             )
             if result is None:
-                print(
-                    f"[sobornost] Unknown hotkey key: {self.config.hotkey_key}",
-                    file=sys.stderr,
-                )
+                logger.warning("Unknown hotkey key: %s", self.config.hotkey_key)
                 return
             kc, flags = result
             desc = describe_hotkey(self.config.hotkey_modifiers, self.config.hotkey_key)
-            print(f"[sobornost] Registering hotkey: {desc}", file=sys.stderr)
+            logger.info("Registering hotkey: %s", desc)
             _native.register_hotkey(kc, flags)
-        except Exception as e:
-            print(f"[sobornost] Hotkey registration error: {e}", file=sys.stderr)
+        except Exception:
+            logger.exception("Hotkey registration error")
 
     def _cycle_clients(self):
-        print("[sobornost] _cycle_clients called", file=sys.stderr)
+        logger.debug("_cycle_clients called")
         wids = sorted(self.thumbnails.keys())
         if not wids:
             return
@@ -189,13 +214,12 @@ class SobornostApp:
 
     def _poll_loop(self):
         if not self._drag_paused:
-            # Battery: skip captures when no EVE window is frontmost
+            # Battery: skip captures when no EVE window is frontmost. One query
+            # for the frontmost pid beats calling is_app_frontmost per client.
             eve_is_frontmost = False
             if self._client_pids:
-                for pid in self._client_pids:
-                    if _native.is_app_frontmost(pid):
-                        eve_is_frontmost = True
-                        break
+                front_pid = _native.frontmost_pid()
+                eve_is_frontmost = front_pid in self._client_pids
 
             if eve_is_frontmost:
                 self._idle_skip_count = 0
@@ -222,7 +246,7 @@ class SobornostApp:
                         tw._restore_topmost()
                         _native.set_always_on_top(tw.win.title(), True)
                     except Exception:
-                        pass
+                        logger.debug("failed to re-assert topmost for wid=%s", tw.wid, exc_info=True)
 
         # Register global hotkey on first poll
         if not self._hotkey_registered:
@@ -234,7 +258,7 @@ class SobornostApp:
             if _native.hotkey_triggered():
                 self._cycle_clients()
         except Exception:
-            pass
+            logger.debug("hotkey poll failed", exc_info=True)
 
         self.root.after(self.config.preview_refresh_ms, self._poll_loop)
 
@@ -246,7 +270,7 @@ class SobornostApp:
                     try:
                         tw.refresh()
                     except Exception:
-                        pass
+                        logger.debug("thumbnail refresh failed for wid=%s", wid, exc_info=True)
             self.dirty_wids.clear()
         else:
             for tw in list(self.thumbnails.values()):
@@ -254,7 +278,7 @@ class SobornostApp:
                     if tw.is_visible():
                         tw.refresh()
                 except Exception:
-                    pass
+                    logger.debug("thumbnail refresh failed for wid=%s", tw.wid, exc_info=True)
 
     def _quit(self):
         _native.disconnect()

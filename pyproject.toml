@@ -16,6 +16,7 @@ dev = [
     "mypy",
     "setuptools<82",
     "py2app",
+    "pytest",
 ]
 
 [tool.ruff]
@@ -29,3 +30,9 @@ quote-style = "double"
 
 [tool.setuptools.packages.find]
 include = ["sobornost*"]
+
+[tool.pytest.ini_options]
+# Tests run against the source tree and stub the native extension
+# (see tests/conftest.py), so no compiled _native is required.
+pythonpath = ["."]
+testpaths = ["tests"]

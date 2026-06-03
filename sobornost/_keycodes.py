@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# macOS Carbon keycode map (HID usage page 0x07)
+# macOS Carbon virtual keycodes (kVK_* constants, e.g. kVK_ANSI_A == 0)
 KEY_CODES: dict[str, int] = {
     "grave": 50, "1": 18, "2": 19, "3": 20, "4": 21,
     "5": 23, "6": 22, "7": 26, "8": 28, "9": 25,

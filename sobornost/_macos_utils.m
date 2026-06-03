@@ -27,6 +27,79 @@ static pid_t _get_pid_for_wid(uint32_t wid) {
     return pid;
 }
 
+// PyDict_SetItemString does NOT steal a reference — it adds its own. Wrap it
+// so the freshly-created value we pass in is released afterwards, otherwise
+// every value leaks one reference.
+static void dict_set_new(PyObject *d, const char *key, PyObject *value) {
+    if (!value) return;
+    PyDict_SetItemString(d, key, value);
+    Py_DECREF(value);
+}
+
+// One device RGB colorspace reused across all captures (creating one per frame
+// is wasted work on the hot path).
+static CGColorSpaceRef _rgb_colorspace(void) {
+    static CGColorSpaceRef cs = NULL;
+    if (!cs) cs = CGColorSpaceCreateDeviceRGB();
+    return cs;
+}
+
+// Convert a CGImage into a (RGBA-bytes, w, h, "RGBA") tuple, downscaling to fit
+// within (max_w, max_h) when both are > 0. Always releases `image`. Returns NULL
+// (no Python exception set) on failure.
+//
+// Two optimisations vs. the old per-site code:
+//  - The bitmap context is configured kCGImageAlphaPremultipliedLast |
+//    kCGBitmapByteOrder32Big, whose in-memory byte order is exactly R,G,B,A, so
+//    we draw straight into the Python bytes buffer — no second malloc, no
+//    per-pixel B/R swizzle loop.
+//  - Drawing into a smaller rect lets CoreGraphics downscale during the draw,
+//    so we never convert/copy the full-resolution image.
+static PyObject *_image_to_result(CGImageRef image, int max_w, int max_h) {
+    if (!image) return NULL;
+
+    size_t iw = CGImageGetWidth(image);
+    size_t ih = CGImageGetHeight(image);
+    if (iw == 0 || ih == 0) {
+        CGImageRelease(image);
+        return NULL;
+    }
+
+    size_t ow = iw, oh = ih;
+    if (max_w > 0 && max_h > 0 && ((size_t)max_w < iw || (size_t)max_h < ih)) {
+        double r = fmin((double)max_w / (double)iw, (double)max_h / (double)ih);
+        ow = (size_t)(iw * r + 0.5);
+        oh = (size_t)(ih * r + 0.5);
+        if (ow == 0) ow = 1;
+        if (oh == 0) oh = 1;
+    }
+
+    PyObject *py_bytes = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)(ow * oh * 4));
+    if (!py_bytes) {
+        CGImageRelease(image);
+        return NULL;
+    }
+    uint8_t *dst = (uint8_t *)PyBytes_AS_STRING(py_bytes);
+
+    CGContextRef ctx = CGBitmapContextCreate(
+        dst, ow, oh, 8, ow * 4, _rgb_colorspace(),
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big
+    );
+    if (!ctx) {
+        Py_DECREF(py_bytes);
+        CGImageRelease(image);
+        return NULL;
+    }
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, ow, oh), image);
+    CGContextRelease(ctx);
+    CGImageRelease(image);
+
+    PyObject *fmt = PyUnicode_FromString("RGBA");
+    // "N" steals the reference to fmt; "O" would leak it on every frame.
+    return Py_BuildValue("(NiiN)", py_bytes, (int)ow, (int)oh, fmt);
+}
+
 static PyObject *py_connect(PyObject *self, PyObject *args) {
     char *display = NULL;
     if (!PyArg_ParseTuple(args, "|z", &display))
@@ -94,21 +167,13 @@ static PyObject *py_list_windows(PyObject *self, PyObject *args) {
             int pid = 0;
             if (pid_num) CFNumberGetValue(pid_num, kCFNumberSInt32Type, &pid);
 
-            CGRect bounds = CGRectNull;
-            CFDictionaryRef bounds_dict = CFDictionaryGetValue(info, kCGWindowBounds);
-            if (bounds_dict) {
-                CGRectMakeWithDictionaryRepresentation(bounds_dict, &bounds);
-            }
-
+            // Only the fields detector.py reads. Window bounds are available via
+            // get_geometry() if ever needed, so we don't box them here per call.
             PyObject *d = PyDict_New();
-            PyDict_SetItemString(d, "id", PyLong_FromUnsignedLong(wid));
-            PyDict_SetItemString(d, "title", PyUnicode_FromString(title_buf));
-            PyDict_SetItemString(d, "pid", PyLong_FromLong(pid));
-            PyDict_SetItemString(d, "wm_class", PyUnicode_FromString(owner_buf));
-            PyDict_SetItemString(d, "x", PyLong_FromLong((long)bounds.origin.x));
-            PyDict_SetItemString(d, "y", PyLong_FromLong((long)bounds.origin.y));
-            PyDict_SetItemString(d, "width", PyLong_FromLong((long)bounds.size.width));
-            PyDict_SetItemString(d, "height", PyLong_FromLong((long)bounds.size.height));
+            dict_set_new(d, "id", PyLong_FromUnsignedLong(wid));
+            dict_set_new(d, "title", PyUnicode_FromString(title_buf));
+            dict_set_new(d, "pid", PyLong_FromLong(pid));
+            dict_set_new(d, "wm_class", PyUnicode_FromString(owner_buf));
             PyList_Append(result, d);
             Py_DECREF(d);
         }
@@ -118,7 +183,7 @@ static PyObject *py_list_windows(PyObject *self, PyObject *args) {
     }
 }
 
-static PyObject *py_capture_inner(uint32_t wid, int timeout_secs) {
+static PyObject *py_capture_inner(uint32_t wid, int timeout_secs, int max_w, int max_h) {
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
     __block CGImageRef image = NULL;
 
@@ -137,61 +202,26 @@ static PyObject *py_capture_inner(uint32_t wid, int timeout_secs) {
     );
 
     if (wait_result != 0) {
-        // Timeout — GPU-accelerated window, background block still running; image owned by block
+        // Timeout — GPU-accelerated window, the background block is still running.
+        // KNOWN LEAK: if the block later succeeds it assigns `image` and nothing
+        // releases that CGImage (we've already returned). This only happens on the
+        // GPU-capture-timeout path; a proper fix needs the block to detect the
+        // abandonment (shared flag under a lock) and release the image itself.
         return NULL;
     }
 
-    if (!image) { return NULL; }
-
-    size_t w = CGImageGetWidth(image);
-    size_t h = CGImageGetHeight(image);
-    if (w == 0 || h == 0) {
-        CGImageRelease(image);
-        return NULL;
-    }
-
-    size_t bpr = w * 4;
-    uint8_t *raw = malloc(bpr * h);
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(
-        raw, w, h, 8, bpr, cs,
-        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host
-    );
-    CGColorSpaceRelease(cs);
-
-    if (!ctx) {
-        free(raw);
-        CGImageRelease(image);
-        return NULL;
-    }
-
-    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), image);
-    CGContextRelease(ctx);
-    CGImageRelease(image);
-
-    // On little-endian host (ARM64/x86_64), CGImage data is ABGR → bytes: B, G, R, A
-    // Output: RGBA → bytes: R, G, B, A
-    PyObject *py_bytes = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)(w * h * 4));
-    uint8_t *dst = (uint8_t *)PyBytes_AS_STRING(py_bytes);
-    for (size_t i = 0; i < w * h; i++) {
-        dst[i*4+0] = raw[i*4+2];
-        dst[i*4+1] = raw[i*4+1];
-        dst[i*4+2] = raw[i*4+0];
-        dst[i*4+3] = raw[i*4+3];
-    }
-
-    free(raw);
-    PyObject *fmt = PyUnicode_FromString("RGBA");
-    return Py_BuildValue("(NiiO)", py_bytes, (int)w, (int)h, fmt);
+    // _image_to_result downscales to (max_w, max_h) and releases the image.
+    return _image_to_result(image, max_w, max_h);
 }
 
 static PyObject *py_capture(PyObject *self, PyObject *args) {
     uint32_t wid;
     int timeout_secs = 5;
-    if (!PyArg_ParseTuple(args, "I|i", &wid, &timeout_secs))
+    int max_w = 0, max_h = 0;
+    if (!PyArg_ParseTuple(args, "I|iii", &wid, &timeout_secs, &max_w, &max_h))
         return NULL;
     @autoreleasepool {
-        PyObject *result = py_capture_inner(wid, timeout_secs);
+        PyObject *result = py_capture_inner(wid, timeout_secs, max_w, max_h);
         if (result) return result;
         Py_RETURN_NONE;
     }
@@ -200,10 +230,11 @@ static PyObject *py_capture(PyObject *self, PyObject *args) {
 // Keep old names as aliases for compatibility
 static PyObject *py_capture_pixmap(PyObject *self, PyObject *args) {
     uint32_t wid;
-    if (!PyArg_ParseTuple(args, "I", &wid))
+    int max_w = 0, max_h = 0;
+    if (!PyArg_ParseTuple(args, "I|ii", &wid, &max_w, &max_h))
         return NULL;
     @autoreleasepool {
-        PyObject *result = py_capture_inner(wid, 5);
+        PyObject *result = py_capture_inner(wid, 5, max_w, max_h);
         if (result) return result;
         Py_RETURN_NONE;
     }
@@ -211,18 +242,52 @@ static PyObject *py_capture_pixmap(PyObject *self, PyObject *args) {
 
 static PyObject *py_capture_window_direct(PyObject *self, PyObject *args) {
     uint32_t wid;
-    if (!PyArg_ParseTuple(args, "I", &wid))
+    int max_w = 0, max_h = 0;
+    if (!PyArg_ParseTuple(args, "I|ii", &wid, &max_w, &max_h))
         return NULL;
     @autoreleasepool {
-        PyObject *result = py_capture_inner(wid, 5);
+        PyObject *result = py_capture_inner(wid, 5, max_w, max_h);
         if (result) return result;
         Py_RETURN_NONE;
     }
 }
 
-// Helper: capture a window using SCContentFilter (display+window filter)
-// This is the per-window Metal-capable capture path.
-static CGImageRef capture_sc_with_filter(uint32_t wid, SCShareableContent *content) {
+// Cached shareable content. getShareableContent enumerates every shareable
+// window/display in the system (tens of ms) and was previously called on every
+// capture of every window, every frame. We fetch it once and reuse it; the
+// caller forces a refresh when a target window isn't present (e.g. a newly
+// opened client), and Python invalidates it when the client list changes.
+static SCShareableContent *s_shareable = nil;  // owned (retained)
+
+static SCShareableContent *_shareable_content(BOOL force) {
+    if (s_shareable && !force) return s_shareable;
+
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    __block SCShareableContent *fetched = nil;
+    [SCShareableContent getShareableContentExcludingDesktopWindows:NO
+                                               onScreenWindowsOnly:YES
+                                                 completionHandler:^(SCShareableContent * _Nullable content, NSError * _Nullable error) {
+        if (error) {
+            fprintf(stderr, "[sobornost C] SCShareableContent error: %s\n",
+                    [[error localizedDescription] UTF8String]);
+        }
+        if (content) fetched = [content retain];  // keep alive past the callback
+        dispatch_semaphore_signal(sem);
+    }];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)));
+
+    if (fetched) {
+        if (s_shareable) [s_shareable release];
+        s_shareable = fetched;  // transfer ownership to the cache
+    }
+    return s_shareable;
+}
+
+// Helper: capture a window using SCContentFilter (display+window filter).
+// This is the per-window Metal-capable capture path. Captures at (max_w, max_h)
+// when given, letting ScreenCaptureKit downscale on the GPU.
+static CGImageRef capture_sc_with_filter(uint32_t wid, SCShareableContent *content,
+                                         int max_w, int max_h) {
     SCWindow *targetWindow = nil;
     for (SCWindow *win in content.windows) {
         if (win.windowID == wid) {
@@ -246,108 +311,66 @@ static CGImageRef capture_sc_with_filter(uint32_t wid, SCShareableContent *conte
                                                        includingWindows:@[targetWindow]];
     if (!filter) return NULL;
 
+    // Downscale during capture: ask SC for a thumbnail-sized frame rather than a
+    // full-resolution one we'd only shrink afterwards.
+    size_t cw = (size_t)wf.size.width;
+    size_t ch = (size_t)wf.size.height;
+    if (cw == 0 || ch == 0) { [filter release]; return NULL; }
+    if (max_w > 0 && max_h > 0 && ((size_t)max_w < cw || (size_t)max_h < ch)) {
+        double r = fmin((double)max_w / (double)cw, (double)max_h / (double)ch);
+        cw = (size_t)(cw * r + 0.5); if (cw == 0) cw = 1;
+        ch = (size_t)(ch * r + 0.5); if (ch == 0) ch = 1;
+    }
+
     SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
-    config.width = (NSInteger)targetWindow.frame.size.width;
-    config.height = (NSInteger)targetWindow.frame.size.height;
+    config.width = (NSInteger)cw;
+    config.height = (NSInteger)ch;
 
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
     __block CGImageRef capturedImage = NULL;
-    __block BOOL captureDone = NO;
-
     [SCScreenshotManager captureImageWithFilter:filter
                                   configuration:config
                               completionHandler:^(CGImageRef _Nullable image, NSError * _Nullable err) {
-        if (image) {
-            capturedImage = CGImageRetain(image);
-        }
-        captureDone = YES;
+        if (image) capturedImage = CGImageRetain(image);
+        dispatch_semaphore_signal(sem);
     }];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)));
 
-    NSDate *capTimeout = [NSDate dateWithTimeIntervalSinceNow:10.0];
-    while (!captureDone && [capTimeout timeIntervalSinceNow] > 0) {
-        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-                                 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-    }
+    // MRC build (setup.py: -ObjC, no -fobjc-arc): release the objects we
+    // alloc/init'd, otherwise they leak on every capture. (If switched to ARC,
+    // remove these and bridge the cast at AXIsProcessTrustedWithOptions.)
+    [config release];
+    [filter release];
     return capturedImage;
 }
 
 static PyObject *py_capture_sc(PyObject *self, PyObject *args) {
     uint32_t wid;
-    if (!PyArg_ParseTuple(args, "I", &wid))
+    int max_w = 0, max_h = 0;
+    if (!PyArg_ParseTuple(args, "I|ii", &wid, &max_w, &max_h))
         return NULL;
 
     @autoreleasepool {
         if (@available(macOS 14.0, *)) {
-            // Try per-window capture via SCContentFilter first
-            __block SCShareableContent *shareableContent = nil;
-            __block BOOL contentDone = NO;
-
-            [SCShareableContent getShareableContentExcludingDesktopWindows:NO
-                                                       onScreenWindowsOnly:YES
-                                                         completionHandler:^(SCShareableContent * _Nullable content, NSError * _Nullable error) {
-                if (error) {
-                    fprintf(stderr, "[sobornost C] SCShareableContent error: %s\n",
-                            [[error localizedDescription] UTF8String]);
-                }
-                shareableContent = content;
-                if (content) {
-                    CFRetain((__bridge CFTypeRef)content);
-                }
-                contentDone = YES;
-            }];
-
-            NSDate *contentTimeout = [NSDate dateWithTimeIntervalSinceNow:10.0];
-            while (!contentDone && [contentTimeout timeIntervalSinceNow] > 0) {
-                [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-                                         beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+            // Per-window capture via cached SCShareableContent.
+            SCShareableContent *content = _shareable_content(NO);
+            CGImageRef scImage = content
+                ? capture_sc_with_filter(wid, content, max_w, max_h) : NULL;
+            if (!scImage) {
+                // Window not in the cached content (e.g. newly opened) — refresh
+                // once and retry before falling back.
+                content = _shareable_content(YES);
+                if (content) scImage = capture_sc_with_filter(wid, content, max_w, max_h);
             }
-            if (!shareableContent) {
-                fprintf(stderr, "[sobornost C] shareableContent is nil (SC not available)\n");
-                // Fall through to fallback
-            } else {
-                CGImageRef scImage = capture_sc_with_filter(wid, shareableContent);
-                CFRelease((__bridge CFTypeRef)shareableContent);
-                if (scImage) {
-                    size_t w = CGImageGetWidth(scImage);
-                    size_t h = CGImageGetHeight(scImage);
-                    if (w > 0 && h > 0) {
-                        size_t bpr = w * 4;
-                        uint8_t *raw = malloc(bpr * h);
-                        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-                        CGContextRef ctx = CGBitmapContextCreate(
-                            raw, w, h, 8, bpr, cs,
-                            kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host
-                        );
-                        CGColorSpaceRelease(cs);
-                        if (ctx) {
-                            CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), scImage);
-                            CGContextRelease(ctx);
-                        }
-                        CGImageRelease(scImage);
-                        if (raw) {
-                            PyObject *py_bytes = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)(w * h * 4));
-                            uint8_t *dst = (uint8_t *)PyBytes_AS_STRING(py_bytes);
-                            for (size_t i = 0; i < w * h; i++) {
-                                dst[i*4+0] = raw[i*4+2];
-                                dst[i*4+1] = raw[i*4+1];
-                                dst[i*4+2] = raw[i*4+0];
-                                dst[i*4+3] = raw[i*4+3];
-                            }
-                            free(raw);
-                            PyObject *fmt = PyUnicode_FromString("RGBA");
-                            return Py_BuildValue("(NiiO)", py_bytes, (int)w, (int)h, fmt);
-                        }
-                        free(raw);
-                    } else {
-                        CGImageRelease(scImage);
-                    }
-                }
-                // Filter-based capture failed; fall through to captureImageInRect:
+            if (scImage) {
+                // Already captured at target size; no further downscale.
+                PyObject *r = _image_to_result(scImage, 0, 0);
+                if (r) return r;
             }
 
-            // Fallback: captureImageInRect: (works on macOS 15.2+, but captures
-            // screen region, not per-window content — so overlapping full-screen
-            // windows will show the same content).
-            // Get the window frame from CGWindowList
+            // Fallback: captureImageInRect: (captures a screen region, not
+            // per-window content — overlapping full-screen windows would show
+            // the same content). Get the window frame from CGWindowList.
             CGRect windowFrame = CGRectNull;
             CFArrayRef cgWindows = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, wid);
             if (cgWindows && CFArrayGetCount(cgWindows) > 0) {
@@ -362,72 +385,36 @@ static PyObject *py_capture_sc(PyObject *self, PyObject *args) {
                 Py_RETURN_NONE;
             }
 
+            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
             __block CGImageRef capturedImage = NULL;
-            __block BOOL captureDone = NO;
-
             [SCScreenshotManager captureImageInRect:windowFrame
                                   completionHandler:^(CGImageRef _Nullable image, NSError * _Nullable error) {
-                if (image) {
-                    capturedImage = CGImageRetain(image);
-                }
+                if (image) capturedImage = CGImageRetain(image);
                 if (error) {
                     fprintf(stderr, "[sobornost C] captureImageInRect error: %s\n",
                             [[error localizedDescription] UTF8String]);
                 }
-                captureDone = YES;
+                dispatch_semaphore_signal(sem);
             }];
+            dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)));
 
-            NSDate *capTimeout = [NSDate dateWithTimeIntervalSinceNow:10.0];
-            while (!captureDone && [capTimeout timeIntervalSinceNow] > 0) {
-                [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-                                         beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-            }
-            if (!capturedImage) {
-                Py_RETURN_NONE;
-            }
-
-            size_t w = CGImageGetWidth(capturedImage);
-            size_t h = CGImageGetHeight(capturedImage);
-            if (w == 0 || h == 0) {
-                CGImageRelease(capturedImage);
-                Py_RETURN_NONE;
-            }
-
-            size_t bpr = w * 4;
-            uint8_t *raw = malloc(bpr * h);
-            CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-            CGContextRef ctx = CGBitmapContextCreate(
-                raw, w, h, 8, bpr, cs,
-                kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host
-            );
-            CGColorSpaceRelease(cs);
-
-            if (!ctx) {
-                free(raw);
-                CGImageRelease(capturedImage);
-                Py_RETURN_NONE;
-            }
-
-            CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), capturedImage);
-            CGContextRelease(ctx);
-            CGImageRelease(capturedImage);
-
-            PyObject *py_bytes = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)(w * h * 4));
-            uint8_t *dst = (uint8_t *)PyBytes_AS_STRING(py_bytes);
-            for (size_t i = 0; i < w * h; i++) {
-                dst[i*4+0] = raw[i*4+2];
-                dst[i*4+1] = raw[i*4+1];
-                dst[i*4+2] = raw[i*4+0];
-                dst[i*4+3] = raw[i*4+3];
-            }
-
-            free(raw);
-            PyObject *fmt = PyUnicode_FromString("RGBA");
-            return Py_BuildValue("(NiiO)", py_bytes, (int)w, (int)h, fmt);
+            // captureImageInRect returns a full-resolution region; downscale here.
+            PyObject *r = _image_to_result(capturedImage, max_w, max_h);
+            if (r) return r;
+            Py_RETURN_NONE;
         }
 
         Py_RETURN_NONE;
     }
+}
+
+// Drop the cached shareable content so the next capture re-enumerates. Called
+// from Python when the client list changes, to bound staleness.
+static PyObject *py_invalidate_capture_cache(PyObject *self, PyObject *args) {
+    @autoreleasepool {
+        if (s_shareable) { [s_shareable release]; s_shareable = nil; }
+    }
+    Py_RETURN_NONE;
 }
 // Find the AX window matching the given CGWindowID by comparing
 // position and size with the CGWindow frame.
@@ -494,6 +481,17 @@ static PyObject *py_is_app_frontmost(PyObject *self, PyObject *args) {
             Py_RETURN_TRUE;
     }
     Py_RETURN_FALSE;
+}
+
+// Return the frontmost app's pid once, so the caller can test membership in its
+// client set in one query rather than calling is_app_frontmost per client pid
+// every poll tick.
+static PyObject *py_frontmost_pid(PyObject *self, PyObject *args) {
+    @autoreleasepool {
+        NSRunningApplication *app = [[NSWorkspace sharedWorkspace] frontmostApplication];
+        if (!app) Py_RETURN_NONE;
+        return PyLong_FromLong((long)app.processIdentifier);
+    }
 }
 
 static PyObject *py_focus_window(PyObject *self, PyObject *args) {
@@ -675,37 +673,19 @@ static PyObject *py_set_always_on_top(PyObject *self, PyObject *args) {
         }
 
         if (found == 0) {
-            // Debug: dump NSApp.windows to stderr so we can see what's available
-            fprintf(stderr, "[sobornost C] NSApp.windows count: %lu\n",
-                    (unsigned long)[NSApp windows].count);
-            for (NSWindow *win in [NSApp windows]) {
-                fprintf(stderr, "[sobornost C]   NSApp win: wNum=%ld style=0x%lx title=\"%s\"\n",
-                        (long)win.windowNumber,
-                        (unsigned long)win.styleMask,
-                        [win.title UTF8String] ?: "(nil)");
-            }
-            // Also dump our windows from CGWindowList
-            pid_t our_pid = getpid();
-            CFArrayRef cgWins = CGWindowListCopyWindowInfo(
-                kCGWindowListOptionAll, kCGNullWindowID);
-            if (cgWins) {
-                CFIndex cnt = CFArrayGetCount(cgWins);
-                fprintf(stderr, "[sobornost C] CGWindowList (all) count: %ld\n", (long)cnt);
-                for (CFIndex i = 0; i < cnt; i++) {
-                    CFDictionaryRef info = CFArrayGetValueAtIndex(cgWins, i);
-                    CFNumberRef pid_num = CFDictionaryGetValue(info, kCGWindowOwnerPID);
-                    if (!pid_num) continue;
-                    pid_t pid = 0;
-                    CFNumberGetValue(pid_num, kCFNumberSInt32Type, &pid);
-                    if (pid != our_pid) continue;
-                    uint32_t cgw = 0;
-                    CFNumberRef wnum = CFDictionaryGetValue(info, kCGWindowNumber);
-                    if (wnum) CFNumberGetValue(wnum, kCFNumberSInt32Type, &cgw);
-                    NSString *nm = (__bridge NSString *)CFDictionaryGetValue(info, kCGWindowName);
-                    fprintf(stderr, "[sobornost C]   CG win: wNum=%u title=\"%s\"\n",
-                            cgw, [nm UTF8String] ?: "(nil)");
+            // This path can recur every ~2s via the topmost re-assert loop, so
+            // the old per-window dump (which also enumerated ALL system windows)
+            // was costly. Emit a concise line, and only dump NSApp.windows when
+            // SOBORNOST_VERBOSE is set.
+            fprintf(stderr, "[sobornost C] set_always_on_top: no window matched \"%s\"\n",
+                    title ?: "");
+            if (getenv("SOBORNOST_VERBOSE")) {
+                for (NSWindow *win in [NSApp windows]) {
+                    fprintf(stderr, "[sobornost C]   NSApp win: wNum=%ld style=0x%lx title=\"%s\"\n",
+                            (long)win.windowNumber,
+                            (unsigned long)win.styleMask,
+                            [win.title UTF8String] ?: "(nil)");
                 }
-                CFRelease(cgWins);
             }
             Py_RETURN_FALSE;
         }
@@ -742,11 +722,11 @@ static PyObject *py_get_geometry(PyObject *self, PyObject *args) {
         }
 
         PyObject *d = PyDict_New();
-        PyDict_SetItemString(d, "x", PyLong_FromLong((long)bounds.origin.x));
-        PyDict_SetItemString(d, "y", PyLong_FromLong((long)bounds.origin.y));
-        PyDict_SetItemString(d, "width", PyLong_FromLong((long)bounds.size.width));
-        PyDict_SetItemString(d, "height", PyLong_FromLong((long)bounds.size.height));
-        PyDict_SetItemString(d, "depth", PyLong_FromLong(32));
+        dict_set_new(d, "x", PyLong_FromLong((long)bounds.origin.x));
+        dict_set_new(d, "y", PyLong_FromLong((long)bounds.origin.y));
+        dict_set_new(d, "width", PyLong_FromLong((long)bounds.size.width));
+        dict_set_new(d, "height", PyLong_FromLong((long)bounds.size.height));
+        dict_set_new(d, "depth", PyLong_FromLong(32));
         CFRelease(windows);
         return d;
     }
@@ -769,6 +749,7 @@ static PyObject *py_poll_event(PyObject *self, PyObject *args) {
 
 static EventHotKeyRef s_hotkey_ref = NULL;
 static bool s_hotkey_triggered = false;
+static bool s_hotkey_handler_installed = false;
 
 static OSStatus _hotkey_handler(EventHandlerCallRef nextHandler, EventRef event, void *userData) {
     s_hotkey_triggered = true;
@@ -808,9 +789,16 @@ static PyObject *py_register_hotkey(PyObject *self, PyObject *args) {
     hotkeyID.id = 1;
     EventTypeSpec eventSpec = {kEventClassKeyboard, kEventHotKeyPressed};
 
-    InstallEventHandler(GetApplicationEventTarget(),
-                        _hotkey_handler,
-                        1, &eventSpec, NULL, NULL);
+    // Install the handler exactly once. register_hotkey is called on every
+    // settings save; re-installing would accumulate handlers (each fires and
+    // leaks, since the EventHandlerRef out-param is discarded). The hotkey
+    // itself is still unregistered/re-registered above.
+    if (!s_hotkey_handler_installed) {
+        InstallEventHandler(GetApplicationEventTarget(),
+                            _hotkey_handler,
+                            1, &eventSpec, NULL, NULL);
+        s_hotkey_handler_installed = true;
+    }
 
     OSStatus err = RegisterEventHotKey((UInt32)keycode, carbonMods,
                                         hotkeyID,
@@ -911,24 +899,32 @@ static PyObject *py_get_active_window(PyObject *self, PyObject *args) {
 }
 
 static PyObject *py_is_accessibility_trusted(PyObject *self, PyObject *args) {
-    NSDictionary *opts = @{(id)kAXTrustedCheckOptionPrompt: @YES};
-    return AXIsProcessTrustedWithOptions((CFDictionaryRef)opts) ? Py_True : Py_False;
+    @autoreleasepool {
+        NSDictionary *opts = @{(id)kAXTrustedCheckOptionPrompt: @YES};
+        // Use Py_RETURN_*: returning Py_True/Py_False directly hands back a
+        // borrowed reference as if owned, under-counting the singleton.
+        if (AXIsProcessTrustedWithOptions((CFDictionaryRef)opts))
+            Py_RETURN_TRUE;
+        Py_RETURN_FALSE;
+    }
 }
 
 static PyObject *py_set_process_name(PyObject *self, PyObject *args) {
     const char *name;
     if (!PyArg_ParseTuple(args, "s", &name)) return NULL;
 
-    NSString *nsName = [NSString stringWithUTF8String:name];
-    if (!nsName) { Py_RETURN_FALSE; }
+    @autoreleasepool {
+        NSString *nsName = [NSString stringWithUTF8String:name];
+        if (!nsName) { Py_RETURN_FALSE; }
 
-    @try {
-        [[NSProcessInfo processInfo] setValue:nsName forKey:@"processName"];
-        Py_RETURN_TRUE;
-    } @catch (NSException *e) {
-        fprintf(stderr, "[sobornost C] set_process_name failed: %s\n",
-                [[e description] UTF8String]);
-        Py_RETURN_FALSE;
+        @try {
+            [[NSProcessInfo processInfo] setValue:nsName forKey:@"processName"];
+            Py_RETURN_TRUE;
+        } @catch (NSException *e) {
+            fprintf(stderr, "[sobornost C] set_process_name failed: %s\n",
+                    [[e description] UTF8String]);
+            Py_RETURN_FALSE;
+        }
     }
 }
 
@@ -939,7 +935,8 @@ static PyMethodDef module_methods[] = {
     {"capture",            py_capture,                  METH_VARARGS, "Capture window via CGWindowListCreateImage with timeout"},
     {"capture_pixmap",     py_capture_pixmap,          METH_VARARGS, "Capture window via CGWindowListCreateImage (5s timeout)"},
     {"capture_window_direct", py_capture_window_direct, METH_VARARGS, "Same as capture_pixmap on macOS (no fallback needed)"},
-    {"capture_sc",         py_capture_sc,              METH_VARARGS, "Capture window via ScreenCaptureKit (handles Metal windows)"},
+    {"capture_sc",         py_capture_sc,              METH_VARARGS, "Capture window via ScreenCaptureKit (handles Metal windows); args (wid[, max_w, max_h])"},
+    {"invalidate_capture_cache", py_invalidate_capture_cache, METH_VARARGS, "Drop cached SCShareableContent (call when client list changes)"},
     {"focus_window",       py_focus_window,       METH_VARARGS, "Focus and raise window via NSRunningApplication + AX"},
     {"minimize_window",    py_minimize_window,    METH_VARARGS, "Minimize window via AX"},
     {"move_resize",        py_move_resize,        METH_VARARGS, "Move and resize window via AX"},
@@ -953,6 +950,7 @@ static PyMethodDef module_methods[] = {
     {"register_hotkey",    py_register_hotkey,    METH_VARARGS, "Register global hotkey via NSEvent global monitor"},
     {"hotkey_triggered",   py_hotkey_triggered,   METH_VARARGS, "Check and clear hotkey trigger flag"},
     {"is_app_frontmost",   py_is_app_frontmost,   METH_VARARGS, "Check if process with given PID is frontmost app"},
+    {"frontmost_pid",      py_frontmost_pid,      METH_VARARGS, "Return the frontmost app's pid (or None)"},
     {"get_window_title",   py_get_window_title,   METH_VARARGS, "Get window title from CGWindowListCopyWindowInfo"},
     {"get_active_window",  py_get_active_window,  METH_VARARGS, "Return CGWindowID of the frontmost window"},
     {"set_process_name",            py_set_process_name,            METH_VARARGS, "Set NSProcessInfo processName via KVC"},

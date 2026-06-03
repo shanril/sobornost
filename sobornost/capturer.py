@@ -1,23 +1,30 @@
 from __future__ import annotations
 
-import sys
+import logging
 
 from PIL import Image
 
 from sobornost import _native
 
+logger = logging.getLogger(__name__)
+
 
 def capture_thumbnail(wid: int, max_size: tuple[int, int] | None = None) -> Image.Image | None:
+    # Pass the target size to the native layer so it downscales during capture
+    # (on the GPU for ScreenCaptureKit) instead of shipping full-resolution
+    # frames. 0,0 means "no scaling". The PIL resize below stays as a safety net.
+    mw, mh = max_size if max_size else (0, 0)
+
     # Try ScreenCaptureKit first (handles Metal/GPU-accelerated windows)
-    result = _native.capture_sc(wid) if hasattr(_native, "capture_sc") else None
+    result = _native.capture_sc(wid, mw, mh) if hasattr(_native, "capture_sc") else None
     if result is None:
-        result = _native.capture(wid, 5)
+        result = _native.capture(wid, 5, mw, mh)
     if result is None:
-        result = _native.capture_pixmap(wid)
+        result = _native.capture_pixmap(wid, mw, mh)
     if result is None:
-        result = _native.capture_window_direct(wid)
+        result = _native.capture_window_direct(wid, mw, mh)
     if result is None:
-        print(f"[sobornost] capture failed for wid={wid} (GPU-accelerated or invalid window)", file=sys.stderr)
+        logger.warning("capture failed for wid=%s (GPU-accelerated or invalid window)", wid)
         return None
 
     data, w, h, fmt = result

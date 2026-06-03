@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -21,6 +22,11 @@ from sobornost.app import SobornostApp
 
 
 def main():
+    logging.basicConfig(
+        level=os.environ.get("SOBORNOST_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
     app = SobornostApp()
     app.run()
 
