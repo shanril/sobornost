@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import shutil
+import subprocess
 import tkinter as tk
 
 from PIL import ImageDraw, ImageFont, ImageTk
@@ -51,15 +53,55 @@ class ThumbnailWindow:
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
         "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
     )
+
+    _linux_font_path: str | None = None
+    _linux_font_checked: bool = False
+
+    @staticmethod
+    def _find_linux_font() -> str | None:
+        """Locate a sans-serif TTF via fontconfig, falling back to hardcoded paths.
+
+        Result is cached for the process lifetime so we don't shell out every frame.
+        """
+        if ThumbnailWindow._linux_font_checked:
+            return ThumbnailWindow._linux_font_path
+        ThumbnailWindow._linux_font_checked = True
+
+        fc_match = shutil.which("fc-match")
+        if fc_match:
+            for family in ("Liberation Sans", "DejaVu Sans", "Noto Sans", "sans-serif"):
+                try:
+                    result = subprocess.run(
+                        [fc_match, "--format", "%{file}", family],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    if result.returncode == 0:
+                        path = result.stdout.strip()
+                        if path and os.path.exists(path):
+                            ThumbnailWindow._linux_font_path = path
+                            logger.debug("fontconfig resolved label font: %s", path)
+                            return path
+                except Exception:  # noqa: BLE001
+                    logger.debug("fc-match failed for %r", family, exc_info=True)
+
+        for p in ThumbnailWindow._LINUX_FONT_PATHS:
+            if os.path.exists(p):
+                ThumbnailWindow._linux_font_path = p
+                logger.debug("hardcoded label font path: %s", p)
+                return p
+
+        return None
 
     @staticmethod
     def _load_label_font(size: int) -> ImageFont.FreeTypeFont:
         if platform.system() == "Darwin":
             return ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size)
-        for p in ThumbnailWindow._LINUX_FONT_PATHS:
-            if os.path.exists(p):
-                return ImageFont.truetype(p, size)
+        path = ThumbnailWindow._find_linux_font()
+        if path is not None:
+            return ImageFont.truetype(path, size)
         return ImageFont.truetype("DejaVuSans.ttf", size)
 
     def _setup_bindings(self):
@@ -172,7 +214,7 @@ class ThumbnailWindow:
             if not name:
                 name = str(self.wid)
             try:
-                font = self._load_label_font(13)
+                font = self._load_label_font(self.config.label_font_size)
             except Exception:
                 font = ImageFont.load_default()
             _, _, tw_text, th_text = draw.textbbox((0, 0), name, font=font)

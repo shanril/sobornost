@@ -23,6 +23,7 @@ class Config:
     active_client_highlight_color: str = "#00ff00"
     active_client_highlight_thickness: int = 3
     label_overlay: bool = True
+    label_font_size: int = 13
     track_client_locations: bool = True
     per_client_position: dict[str, dict] = field(default_factory=dict)
     hotkey_modifiers: list[str] = field(default_factory=lambda: ["Control"])

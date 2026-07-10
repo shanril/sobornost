@@ -124,6 +124,12 @@ class SettingsWindow:
         self.label_var = tk.BooleanVar(value=self.config.label_overlay)
         ttk.Checkbutton(frame, text="Show Label Overlay", variable=self.label_var
                          ).grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+        row += 1
+
+        ttk.Label(frame, text="Label Font Size:").grid(row=row, column=0, sticky="w", pady=2)
+        self.font_size_var = tk.IntVar(value=self.config.label_font_size)
+        ttk.Spinbox(frame, from_=6, to=48, increment=1, textvariable=self.font_size_var, width=8
+                     ).grid(row=row, column=1, sticky="w", pady=2)
 
     def _save(self):
         self.config.thumbnail_width = self.width_var.get()
@@ -133,6 +139,7 @@ class SettingsWindow:
         self.config.track_client_locations = self.track_var.get()
         self.config.active_client_highlight_color = self.highlight_var.get()
         self.config.label_overlay = self.label_var.get()
+        self.config.label_font_size = self.font_size_var.get()
 
         # Hotkey from UI
         self.config.hotkey_modifiers = [
