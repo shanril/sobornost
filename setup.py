@@ -28,11 +28,12 @@ if system == "Darwin":
         ],
     )
 elif system == "Linux":
-    # Stub — Linux support is not yet implemented.
-    # Importing _native raises NotImplementedError at runtime.
     ext = Extension(
         "sobornost._native",
         sources=["sobornost/_linux_utils.c"],
+        extra_compile_args=[],
+        extra_link_args=[],
+        libraries=["xcb", "xcb-ewmh", "xcb-damage", "xcb-keysyms"],
     )
 else:
     print(f"ERROR: unsupported platform: {system}", file=sys.stderr)

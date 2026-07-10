@@ -6,7 +6,7 @@ import subprocess
 import tkinter as tk
 
 from sobornost import _native
-from sobornost._keycodes import describe_hotkey, hotkey_to_carbon
+from sobornost._keycodes import describe_hotkey, hotkey_to_carbon, hotkey_to_x11
 from sobornost.config import Config
 from sobornost.detector import EVE_TITLE_FILTER, detect_clients
 from sobornost.switcher import focus_client
@@ -20,16 +20,18 @@ class SobornostApp:
     @staticmethod
     def _ensure_supported_platform():
         system = platform.system()
-        if system == "Linux":
-            raise NotImplementedError(
-                "sobornost: Linux support is not yet implemented"
-            )
-        elif system != "Darwin":
+        if system not in ("Darwin", "Linux"):
             raise RuntimeError(f"Unsupported platform: {system}")
 
     def __init__(self):
         self.config = Config.load()
         self._ensure_supported_platform()
+        if not _native.connect():
+            raise RuntimeError(
+                "Failed to connect to X display — ensure $DISPLAY is set "
+                "and an X server (or Xwayland) is running."
+            )
+        logger.debug("Native backend connected")
         self.root = tk.Tk()
         self.root.title("sobornost")
         self.root.withdraw()
@@ -154,9 +156,13 @@ class SobornostApp:
         # CGWindowListCopyWindowInfo.  Wait a tick so the Tk window is
         # registered with the window server before we search.
         self.root.after(50, self._set_thumbnail_level, tw, wid)
+    def _topmost_target(self, tw: ThumbnailWindow):
+        if platform.system() == "Darwin":
+            return tw.win.title()
+        return tw.win.winfo_id()
     def _set_thumbnail_level(self, tw: ThumbnailWindow, wid: int):
         try:
-            level = _native.set_always_on_top(tw.win.title(), True)
+            level = _native.set_always_on_top(self._topmost_target(tw), True)
             if level is False:
                 logger.warning("set_always_on_top failed for %r", tw.win.title())
             else:
@@ -171,17 +177,24 @@ class SobornostApp:
 
     def _register_hotkey(self):
         try:
-            result = hotkey_to_carbon(
-                self.config.hotkey_modifiers,
-                self.config.hotkey_key,
-            )
+            if platform.system() == "Linux":
+                result = hotkey_to_x11(
+                    self.config.hotkey_modifiers,
+                    self.config.hotkey_key,
+                )
+            else:
+                result = hotkey_to_carbon(
+                    self.config.hotkey_modifiers,
+                    self.config.hotkey_key,
+                )
             if result is None:
                 logger.warning("Unknown hotkey key: %s", self.config.hotkey_key)
                 return
             kc, flags = result
             desc = describe_hotkey(self.config.hotkey_modifiers, self.config.hotkey_key)
             logger.info("Registering hotkey: %s", desc)
-            _native.register_hotkey(kc, flags)
+            if not _native.register_hotkey(kc, flags):
+                logger.warning("Hotkey registration failed (grab rejected)")
         except Exception:
             logger.exception("Hotkey registration error")
 
@@ -206,7 +219,7 @@ class SobornostApp:
             tw.win.attributes("-alpha", self.config.thumbnail_opacity)
             has_pos = self.config.per_client_position.get(tw._pos_key())
             if not has_pos:
-                tw._update_geometry()
+                tw._apply_geometry()
         self._refresh_clients()
         if self.active_client_wid is not None and self.active_client_wid in self.thumbnails:
             self.thumbnails[self.active_client_wid].set_active(True)
@@ -244,7 +257,7 @@ class SobornostApp:
                 for tw in self.thumbnails.values():
                     try:
                         tw._restore_topmost()
-                        _native.set_always_on_top(tw.win.title(), True)
+                        _native.set_always_on_top(self._topmost_target(tw), True)
                     except Exception:
                         logger.debug("failed to re-assert topmost for wid=%s", tw.wid, exc_info=True)
 
