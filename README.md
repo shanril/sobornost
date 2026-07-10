@@ -92,6 +92,7 @@ Settings are stored in `~/.config/sobornost/config.json`.
 | `preview_refresh_ms` | `200` | Thumbnail update interval |
 | `active_client_highlight_color` | `"#00ff00"` | Border color for active client |
 | `label_overlay` | `true` | Show character name on thumbnail |
+| `label_font_size` | `13` | Font size for thumbnail label overlay (6–48) |
 | `track_client_locations` | `true` | Remember thumbnail positions |
 
 ## Architecture

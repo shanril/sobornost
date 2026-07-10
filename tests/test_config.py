@@ -32,6 +32,8 @@ def test_defaults():
     assert c.hotkey_modifiers == ["Control"]
     assert c.hotkey_key == "grave"
     assert c.per_client_position == {}
+    assert c.label_overlay is True
+    assert c.label_font_size == 13
 
 
 def test_load_missing_file_returns_defaults(tmp_config):
@@ -40,7 +42,8 @@ def test_load_missing_file_returns_defaults(tmp_config):
 
 
 def test_save_then_load_round_trips(tmp_config):
-    c = Config(thumbnail_width=512, thumbnail_opacity=0.5, hotkey_key="f1")
+    c = Config(thumbnail_width=512, thumbnail_opacity=0.5, hotkey_key="f1",
+               label_overlay=False, label_font_size=20)
     c.save()
     assert tmp_config.exists()
     loaded = Config.load()
