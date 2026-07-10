@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
+import platform
 import tkinter as tk
 
-from PIL import ImageDraw, ImageFont, ImageOps, ImageTk
+from PIL import ImageDraw, ImageFont, ImageTk
 
 from sobornost import switcher
 from sobornost.capturer import capture_thumbnail
@@ -29,6 +31,11 @@ class ThumbnailWindow:
         self.win.attributes("-topmost", True)
         self.win.configure(bg="black")
         self.win.attributes("-alpha", self.config.thumbnail_opacity)
+        self.win.configure(
+            highlightbackground=self.config.active_client_highlight_color,
+            highlightcolor=self.config.active_client_highlight_color,
+            highlightthickness=0,
+        )
 
         self.label_frame = tk.Frame(self.win, bg="black", highlightthickness=0)
         self.label_frame.pack(fill="both", expand=True)
@@ -37,7 +44,23 @@ class ThumbnailWindow:
         self.label.pack(fill="both", expand=True)
 
         self._setup_bindings()
-        self._update_geometry()
+        self._apply_geometry()
+
+    _LINUX_FONT_PATHS = (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+    )
+
+    @staticmethod
+    def _load_label_font(size: int) -> ImageFont.FreeTypeFont:
+        if platform.system() == "Darwin":
+            return ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size)
+        for p in ThumbnailWindow._LINUX_FONT_PATHS:
+            if os.path.exists(p):
+                return ImageFont.truetype(p, size)
+        return ImageFont.truetype("DejaVuSans.ttf", size)
 
     def _setup_bindings(self):
         for w in (self.win, self.label):
@@ -99,17 +122,25 @@ class ThumbnailWindow:
         except tk.TclError:
             pass
 
-    def _update_geometry(self):
+    def _apply_geometry(self):
         tw = self.config.thumbnail_width
         th = self.config.thumbnail_height
+        t = self.config.active_client_highlight_thickness if self._active else 0
+        outer_w = tw + 2 * t
+        outer_h = th + 2 * t
         pos = (self.config.per_client_position or {}).get(self._pos_key())
-        if pos:
-            self.win.geometry(f"{tw}x{th}+{pos['x']}+{pos['y']}")
-        else:
-            self.win.geometry(f"{tw}x{th}+100+100")
+        base_x = pos["x"] if pos else 100
+        base_y = pos["y"] if pos else 100
+        self.win.geometry(f"{outer_w}x{outer_h}+{base_x - t}+{base_y - t}")
+        self.win.configure(
+            highlightbackground=self.config.active_client_highlight_color,
+            highlightcolor=self.config.active_client_highlight_color,
+            highlightthickness=t,
+        )
 
     def set_active(self, active: bool):
         self._active = active
+        self._apply_geometry()
         self._refresh_thumbnail()
 
     def update_title(self, title: str):
@@ -120,7 +151,7 @@ class ThumbnailWindow:
             old_key = self._pos_key()
             self.title = title
             if self._pos_key() != old_key:
-                self._update_geometry()
+                self._apply_geometry()
 
     def refresh(self):
         if self._destroyed:
@@ -129,17 +160,9 @@ class ThumbnailWindow:
 
     def _refresh_thumbnail(self):
         tw, th = (self.config.thumbnail_width, self.config.thumbnail_height)
-        border = self.config.active_client_highlight_thickness if self._active else 0
-        if border:
-            tw -= border * 2
-            th -= border * 2
         img = capture_thumbnail(self.wid, max_size=(tw, th))
         if img is None:
             return
-
-        if self._active and border:
-            color = self.config.active_client_highlight_color
-            img = ImageOps.expand(img, border=border, fill=color)
 
         if self.config.label_overlay:
             tw, th = img.size
@@ -149,7 +172,7 @@ class ThumbnailWindow:
             if not name:
                 name = str(self.wid)
             try:
-                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 13)
+                font = self._load_label_font(13)
             except Exception:
                 font = ImageFont.load_default()
             _, _, tw_text, th_text = draw.textbbox((0, 0), name, font=font)

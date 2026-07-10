@@ -60,6 +60,41 @@ KEY_CHOICES: list[str] = [
 ]
 
 
+# X11 keysyms for key names (for Linux hotkey registration).
+# Letters and digits: keysym == ASCII code. Special keys use XK_* constants.
+X11_KEY_SYMS: dict[str, int] = {
+    "grave": 0x0060,
+    "minus": 0x002d,
+    "equal": 0x003d,
+    "tab": 0xff09,
+    "space": 0x0020,
+    "enter": 0xff0d,
+    "escape": 0xff1b,
+    "delete": 0xffff,
+    "home": 0xff50,
+    "end": 0xff57,
+    "pageup": 0xff55,
+    "pagedown": 0xff56,
+    "left": 0xff51,
+    "right": 0xff53,
+    "up": 0xff52,
+    "down": 0xff54,
+    "f1": 0xffbe, "f2": 0xffbf, "f3": 0xffc0, "f4": 0xffc1,
+    "f5": 0xffc2, "f6": 0xffc3, "f7": 0xffc4, "f8": 0xffc5,
+    "f9": 0xffc6, "f10": 0xffc7, "f11": 0xffc8, "f12": 0xffc9,
+    **{k: ord(k) for k in "abcdefghijklmnopqrstuvwxyz"},
+    **{k: ord(k) for k in "0123456789"},
+}
+
+# X11 modifier masks (for Linux hotkey registration).
+X11_MOD_MASKS: dict[str, int] = {
+    "Control": 4,    # XCB_MOD_MASK_CONTROL (1 << 2)
+    "Shift": 1,      # XCB_MOD_MASK_SHIFT (1 << 0)
+    "Option": 8,     # XCB_MOD_MASK_1 / Alt (1 << 3)
+    "Command": 64,   # XCB_MOD_MASK_4 / Super (1 << 6)
+}
+
+
 def describe_hotkey(mods: list[str], key: str) -> str:
     return "+".join(mods + [KEY_NAMES.get(key, key)])
 
@@ -72,3 +107,13 @@ def hotkey_to_carbon(mods: list[str], key: str) -> tuple[int, int] | None:
     for m in mods:
         flags |= MOD_BITS.get(m, 0)
     return kc, flags
+
+
+def hotkey_to_x11(mods: list[str], key: str) -> tuple[int, int] | None:
+    ks = X11_KEY_SYMS.get(key)
+    if ks is None:
+        return None
+    mask = 0
+    for m in mods:
+        mask |= X11_MOD_MASKS.get(m, 0)
+    return ks, mask

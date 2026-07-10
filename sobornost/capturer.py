@@ -8,6 +8,8 @@ from sobornost import _native
 
 logger = logging.getLogger(__name__)
 
+_warned_wids: set[int] = set()
+
 
 def capture_thumbnail(wid: int, max_size: tuple[int, int] | None = None) -> Image.Image | None:
     # Pass the target size to the native layer so it downscales during capture
@@ -24,8 +26,14 @@ def capture_thumbnail(wid: int, max_size: tuple[int, int] | None = None) -> Imag
     if result is None:
         result = _native.capture_window_direct(wid, mw, mh)
     if result is None:
-        logger.warning("capture failed for wid=%s (GPU-accelerated or invalid window)", wid)
+        if wid not in _warned_wids:
+            logger.warning("capture failed for wid=%s (GPU-accelerated or invalid window)", wid)
+            _warned_wids.add(wid)
+        else:
+            logger.debug("capture failed for wid=%s", wid)
         return None
+
+    _warned_wids.discard(wid)
 
     data, w, h, fmt = result
     pil_mode = fmt
