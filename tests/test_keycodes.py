@@ -10,7 +10,7 @@ def test_describe_hotkey_uses_display_names():
 
 def test_describe_hotkey_falls_back_to_raw_key_name():
     # An unknown key has no display name, so the raw key is shown verbatim.
-    assert kc.describe_hotkey([], "f13") == "f13"
+    assert kc.describe_hotkey([], "f25") == "f25"
 
 
 def test_hotkey_to_carbon_known_key():

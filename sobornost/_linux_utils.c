@@ -19,6 +19,22 @@ static xcb_key_symbols_t  *g_keysyms = NULL;
 static xcb_keycode_t       g_hotkey_keycodes[8];
 static int                 g_hotkey_ncodes = 0;
 
+/* Per-depth pixmap format cache, populated from xcb_setup_pixmap_formats.
+ *
+ * The wire layout of an xcb_get_image ZPixmap reply is defined per-depth by
+ * the server (xcb_format_t: bits_per_pixel + scanline_pad), NOT by the depth
+ * field alone. A depth-N image is not necessarily ceil(N/8) bytes/pixel on the
+ * wire — e.g. depth-24 TrueColor is almost always 32 bits/pixel (BGRX), and
+ * depth-16 is exactly 16 bits/pixel. We cache the server-reported table once
+ * per connection and consult it for every capture. */
+#define MAX_PIXMAP_FORMATS 32
+static struct {
+    uint8_t depth;
+    uint8_t bits_per_pixel;
+    uint8_t scanline_pad;
+} g_pixmap_formats[MAX_PIXMAP_FORMATS];
+static int g_n_pixmap_formats = 0;
+
 /* ------------------------------------------------------------------ */
 /* Forward declarations                                               */
 /* ------------------------------------------------------------------ */
@@ -59,6 +75,42 @@ static void init_ewmh(void) {
     xcb_intern_atom_cookie_t *cookies = xcb_ewmh_init_atoms(g_dpy, &g_ewmh);
     int rc = xcb_ewmh_init_atoms_replies(&g_ewmh, cookies, NULL);
     g_ewmh_ok = (rc == 1);
+}
+
+/* Walk xcb_setup_pixmap_formats and cache the (depth, bpp, scanline_pad)
+ * triples reported by this server. Servers typically report only a handful
+ * of formats (one per supported depth). Safe to call repeatedly — always
+ * resets the cache first. */
+static void init_pixmap_formats(void) {
+    g_n_pixmap_formats = 0;
+    if (!g_dpy) return;
+    xcb_format_iterator_t it =
+        xcb_setup_pixmap_formats_iterator(xcb_get_setup(g_dpy));
+    for (; it.rem && g_n_pixmap_formats < MAX_PIXMAP_FORMATS;
+         xcb_format_next(&it)) {
+        g_pixmap_formats[g_n_pixmap_formats].depth =
+            it.data->depth;
+        g_pixmap_formats[g_n_pixmap_formats].bits_per_pixel =
+            it.data->bits_per_pixel;
+        g_pixmap_formats[g_n_pixmap_formats].scanline_pad =
+            it.data->scanline_pad;
+        g_n_pixmap_formats++;
+    }
+}
+
+/* Helper: decode a C string to a Python unicode object.
+ * Tries UTF-8 first (for _NET_WM_NAME), falls back to Latin-1
+ * (for WM_NAME / WM_CLASS which use the X11 STRING atom = ISO-8859-1).
+ * Never fails — every byte maps to a codepoint. */
+static PyObject *str_to_pyunicode(const char *s) {
+    if (!s || !s[0]) return PyUnicode_FromString("");
+    size_t len = strlen(s);
+    PyObject *obj = PyUnicode_Decode(s, len, "utf-8", "strict");
+    if (!obj) {
+        PyErr_Clear();
+        obj = PyUnicode_Decode(s, len, "latin-1", NULL);
+    }
+    return obj;
 }
 
 /* Helper: set dict key and DECREF value. */
@@ -150,6 +202,7 @@ static PyObject *py_connect(PyObject *self, PyObject *args, PyObject *kw) {
 
     if (g_dpy) {
         g_ewmh_ok = 0;
+        g_n_pixmap_formats = 0;
         xcb_ewmh_connection_wipe(&g_ewmh);
         xcb_disconnect(g_dpy);
         g_dpy = NULL;
@@ -173,6 +226,7 @@ static PyObject *py_connect(PyObject *self, PyObject *args, PyObject *kw) {
 
     g_screen = si.data;
     init_ewmh();
+    init_pixmap_formats();
     g_keysyms = xcb_key_symbols_alloc(g_dpy);
 
     Py_RETURN_TRUE;
@@ -187,6 +241,7 @@ static PyObject *py_disconnect(PyObject *self, PyObject *args) {
         g_keysyms = NULL;
     }
     g_ewmh_ok = 0;
+    g_n_pixmap_formats = 0;
     xcb_ewmh_connection_wipe(&g_ewmh);
     xcb_disconnect(g_dpy);
     g_dpy = NULL;
@@ -262,10 +317,9 @@ static PyObject *py_list_windows(PyObject *self, PyObject *args) {
                 pid_t pp = wid_pid(wid);
                 PyObject *d = PyDict_New();
                 dict_put(d, "id",   PyLong_FromUnsignedLong((unsigned long)wid));
-                dict_put(d, "title", PyUnicode_FromString(title_str));
+                dict_put(d, "title", str_to_pyunicode(title_str));
                 dict_put(d, "pid", PyLong_FromLong(pp < 0 ? 0 : pp));
-                dict_put(d, "wm_class", PyUnicode_FromString(
-                    wclass_buf[0] ? wclass_buf : ""));
+                dict_put(d, "wm_class", str_to_pyunicode(wclass_buf));
                 PyList_Append(result, d);
                 Py_DECREF(d);
             }
@@ -317,10 +371,56 @@ static void compute_target_size(int sw, int sh, int max_w, int max_h,
     }
 }
 
+/* Look up the real bits-per-pixel for a depth from the cached server
+ * pixmap-format table. */
+static int bpp_for_depth(int depth) {
+    int i;
+    for (i = 0; i < g_n_pixmap_formats; i++) {
+        if (g_pixmap_formats[i].depth == depth)
+            return g_pixmap_formats[i].bits_per_pixel;
+    }
+    /* Defensive fallback only: the X protocol does not fix a depth→bpp
+     * mapping, so this is hit only if the server failed to report a format
+     * for this depth (which would normally mean we never should have received
+     * image data at this depth in the first place). These are the de facto
+     * values used by every mainstream X server for the common depths. */
+    if (depth == 32) return 32;
+    if (depth == 24) return 32;
+    if (depth == 16) return 16;
+    if (depth == 15) return 16;
+    if (depth == 8)  return 8;
+    return (depth + 7) & ~7;
+}
+
+/* Look up the scanline pad (in bits) for a depth from the cached table. */
+static int scanline_pad_for_depth(int depth) {
+    int i;
+    for (i = 0; i < g_n_pixmap_formats; i++) {
+        if (g_pixmap_formats[i].depth == depth)
+            return g_pixmap_formats[i].scanline_pad;
+    }
+    return 32;  /* defensive fallback; 32 covers every depth we care about */
+}
+
+/* Real per-row stride (in bytes) for a ZPixmap image of the given depth and
+ * width. The X server pads each scanline so its bit length is a multiple of
+ * scanline_pad, so the row stride is (width*bpp) rounded up to the next
+ * multiple of scanline_pad, then divided by 8. This is NOT in general equal
+ * to width * bytes_per_pixel — naively assuming that produces sheared or
+ * drift-corrupted captures whenever the pad does not happen to match. */
+static size_t image_stride(int depth, int width) {
+    int bpp = bpp_for_depth(depth);
+    int pad = scanline_pad_for_depth(depth);
+    if (pad <= 0) pad = 8;
+    long row_bits = (long)width * (long)bpp;
+    long padded = ((row_bits + pad - 1) / pad) * pad;
+    return (size_t)(padded / 8);
+}
+
 /* Convert xcb_get_image_reply_t to a Python (bytes, w, h, "RGBA") tuple.
  * Takes ownership of img (frees it). */
 static PyObject *image_reply_to_pytuple(xcb_get_image_reply_t *img,
-                                         int sw, int sh, int dw, int dh) {
+                                          int sw, int sh, int dw, int dh) {
     if (!img) Py_RETURN_NONE;
 
     int data_len = xcb_get_image_data_length(img);
@@ -329,34 +429,111 @@ static PyObject *image_reply_to_pytuple(xcb_get_image_reply_t *img,
 
     int depth = img->depth;
     if (depth == 0) depth = 24;
-    int bpp = (depth + 7) / 8;
-    if (bpp < 3) bpp = 4;
+    int bpp = bpp_for_depth(depth);
+    size_t pixel_bytes = ((size_t)bpp + 7) / 8;
+    size_t stride = image_stride(depth, sw);
+    if (stride == 0) stride = pixel_bytes * (size_t)sw;  /* defensive */
 
-    /* Convert raw pixels to RGBA. */
+    /* ZPixmap byte order is the server's image_byte_order (not the host's). */
+    int lsb_first = (xcb_get_setup(g_dpy)->image_byte_order ==
+                     XCB_IMAGE_ORDER_LSB_FIRST);
+
+    /* Convert raw pixels to RGBA. calloc so any pixel we fail to fill
+     * (e.g. truncated reply) reads back as transparent black, not garbage. */
     size_t rgba_sz = (size_t)sw * (size_t)sh * 4;
-    uint8_t *rgba = (uint8_t *)malloc(rgba_sz);
+    uint8_t *rgba = (uint8_t *)calloc(rgba_sz, 1);
     if (!rgba) { free(img); Py_RETURN_NONE; }
 
     int y, x;
     for (y = 0; y < sh; y++) {
+        size_t row_off = (size_t)y * stride;
+        if (row_off >= (size_t)data_len) break;          /* whole row missing */
         for (x = 0; x < sw; x++) {
-            size_t src_off = (size_t)(y * sw + x) * bpp;
-            size_t dst_off = (size_t)(y * sw + x) * 4;
-            if (src_off + (size_t)bpp > (size_t)data_len) break;
+            size_t src_off = row_off + x * pixel_bytes;
+            size_t dst_off = ((size_t)y * sw + x) * 4;
 
-            if (bpp == 4) {
-                rgba[dst_off+0] = raw[src_off+2];
-                rgba[dst_off+1] = raw[src_off+1];
-                rgba[dst_off+2] = raw[src_off+0];
-                rgba[dst_off+3] = raw[src_off+3];
-            } else {
-                rgba[dst_off+0] = raw[src_off+0];
-                rgba[dst_off+1] = raw[src_off+1];
-                rgba[dst_off+2] = raw[src_off+2];
+            /* Safety net: keep this bounds check even though stride now
+             * accounts for pad, so a malformed/truncated reply cannot read
+             * past the end of the wire data. */
+            if (src_off + pixel_bytes > (size_t)data_len) goto convert_done;
+
+            switch (bpp) {
+            case 32:
+                /* 32bpp ZPixmap: pixel = 0x??RRGGBB on the wire, laid out
+                 * as B,G,R,X on LSB; X,R,G,B on MSB. Preserves the existing
+                 * behaviour (alpha copied from the server's pad byte) which
+                 * is what worked for depth-24 desktops before this fix. */
+                if (lsb_first) {
+                    rgba[dst_off+0] = raw[src_off+2];
+                    rgba[dst_off+1] = raw[src_off+1];
+                    rgba[dst_off+2] = raw[src_off+0];
+                    rgba[dst_off+3] = raw[src_off+3];
+                } else {
+                    rgba[dst_off+0] = raw[src_off+1];
+                    rgba[dst_off+1] = raw[src_off+2];
+                    rgba[dst_off+2] = raw[src_off+3];
+                    rgba[dst_off+3] = raw[src_off+0];
+                }
+                break;
+            case 24:
+                /* 3-byte packed BGR (LSB) / RGB (MSB); force opaque alpha. */
+                if (lsb_first) {
+                    rgba[dst_off+0] = raw[src_off+2];
+                    rgba[dst_off+1] = raw[src_off+1];
+                    rgba[dst_off+2] = raw[src_off+0];
+                } else {
+                    rgba[dst_off+0] = raw[src_off+0];
+                    rgba[dst_off+1] = raw[src_off+1];
+                    rgba[dst_off+2] = raw[src_off+2];
+                }
                 rgba[dst_off+3] = 0xFF;
+                break;
+            case 16: {
+                /* 16bpp: depth 16 → RGB565, depth 15 → RGB555. A 16bpp pixel
+                 * is NOT three separate R/G/B bytes — decode it explicitly
+                 * rather than falling through to the 3-byte branch. */
+                uint16_t pix;
+                if (lsb_first)
+                    pix = (uint16_t)raw[src_off+0]
+                        | ((uint16_t)raw[src_off+1] << 8);
+                else
+                    pix = (uint16_t)raw[src_off+1]
+                        | ((uint16_t)raw[src_off+0] << 8);
+                unsigned r, g, b;
+                if (depth >= 16) {            /* RGB565: 5/6/5 */
+                    r = (pix >> 11) & 0x1F;
+                    g = (pix >> 5)  & 0x3F;
+                    b =  pix        & 0x1F;
+                    rgba[dst_off+0] = (uint8_t)((r << 3) | (r >> 2));
+                    rgba[dst_off+1] = (uint8_t)((g << 2) | (g >> 4));
+                    rgba[dst_off+2] = (uint8_t)((b << 3) | (b >> 2));
+                } else {                      /* RGB555: 5/5/5 */
+                    r = (pix >> 10) & 0x1F;
+                    g = (pix >> 5)  & 0x1F;
+                    b =  pix        & 0x1F;
+                    rgba[dst_off+0] = (uint8_t)((r << 3) | (r >> 2));
+                    rgba[dst_off+1] = (uint8_t)((g << 3) | (g >> 2));
+                    rgba[dst_off+2] = (uint8_t)((b << 3) | (b >> 2));
+                }
+                rgba[dst_off+3] = 0xFF;
+                break;
+            }
+            case 8:
+                /* 8bpp paletted — we don't have the server's colormap here,
+                 * so map the index to grayscale as a defensive fallback. */
+                rgba[dst_off+0] = raw[src_off+0];
+                rgba[dst_off+1] = raw[src_off+0];
+                rgba[dst_off+2] = raw[src_off+0];
+                rgba[dst_off+3] = 0xFF;
+                break;
+            default:
+                /* 1/4bpp packed-bit formats are unsupported for thumbnails;
+                 * leave the dst pixel as zeroed (transparent black). */
+                break;
             }
         }
     }
+convert_done:
 
     free(img);
 
@@ -813,7 +990,7 @@ static PyObject *py_get_window_title(PyObject *self, PyObject *args) {
 
     char *t = wid_title(wid);
     if (t[0] == '\0') return PyUnicode_FromString("");
-    return PyUnicode_FromString(t);
+    return str_to_pyunicode(t);
 }
 
 static PyObject *py_get_active_window(PyObject *self, PyObject *args) {

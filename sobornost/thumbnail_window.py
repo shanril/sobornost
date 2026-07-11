@@ -143,6 +143,7 @@ class ThumbnailWindow:
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.WindowDoesNotAcceptFocus
+            | Qt.WindowType.X11BypassWindowManagerHint
         )
         self.win.setOpacity(self.config.thumbnail_opacity)
         self.win.setColor("black")
