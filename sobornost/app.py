@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import logging
+import os
 import platform
+import signal
 import subprocess
-import tkinter as tk
+import sys
+
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from sobornost import _native
 from sobornost._keycodes import describe_hotkey, hotkey_to_carbon, hotkey_to_x11
 from sobornost.config import Config
 from sobornost.detector import EVE_TITLE_FILTER, detect_clients
 from sobornost.switcher import focus_client
-from sobornost.thumbnails import ThumbnailWindow
-from sobornost.ui import SettingsWindow
+from sobornost.thumbnail_window import ThumbnailWindow
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +37,14 @@ class SobornostApp:
                 "and an X server (or Xwayland) is running."
             )
         logger.debug("Native backend connected")
-        self.root = tk.Tk()
-        self.root.title("sobornost")
-        self.root.withdraw()
+
+        self.app = QApplication.instance() or QApplication(sys.argv)
+        QGuiApplication.setQuitOnLastWindowClosed(False)
+
         if platform.system() == "Darwin":
-            logger.info("macOS: dock icon visible (click to open settings)")
-            self.root.createcommand("::tk::mac::OnReopen", self._open_settings)
+            logger.info("macOS: dock icon visible in dev mode (use tray icon for controls)")
             if hasattr(_native, "is_accessibility_trusted"):
                 logger.info("Accessibility trusted: %s", _native.is_accessibility_trusted())
-        self._macos_topmost_count = 0
 
         self.thumbnails: dict[int, ThumbnailWindow] = {}
         self.active_client_wid: int | None = None
@@ -51,22 +55,40 @@ class SobornostApp:
         self._client_pids: set[int] = set()
         self._idle_skip_count = 0
         self._logged_no_windows = False
-
-        self._setup_menu()
-        self._refresh_clients()
         self._hotkey_registered = False
-        self._poll_loop()
+        self._topmost_count = 0
+        self._quit_done = False
 
-    def _setup_menu(self):
-        self.menubar = tk.Menu(self.root)
-        self.root.config(menu=self.menubar)
+        self._setup_tray()
+        self._refresh_clients()
 
-        file_menu = tk.Menu(self.menubar, tearoff=0)
-        file_menu.add_command(label="Cycle Clients", command=self._cycle_clients)
-        file_menu.add_command(label="Settings", command=self._open_settings)
-        file_menu.add_separator()
-        file_menu.add_command(label="Quit", command=self._quit)
-        self.menubar.add_cascade(label="File", menu=file_menu)
+        self._poll_timer = QTimer(self.app)
+        self._poll_timer.setInterval(self.config.preview_refresh_ms)
+        self._poll_timer.timeout.connect(self._poll_tick)
+        self._poll_timer.start()
+
+    def _setup_tray(self):
+        from sobornost import resource_path
+        icon_path = resource_path("resources/icon.png")
+        if os.path.exists(icon_path):
+            icon = QIcon(icon_path)
+        else:
+            logger.warning("Tray icon not found at %s; using fallback", icon_path)
+            style = QApplication.style()
+            icon = style.standardIcon(QStyle.StandardPixmap.SP_ComputerIcon) if style else QIcon()
+        self.tray = QSystemTrayIcon(icon, self.app)
+        self.tray.setToolTip("sobornost")
+
+        menu = QMenu()
+        menu.addAction("Cycle Clients", self._cycle_clients)
+        menu.addAction("Settings", self._open_settings)
+        menu.addSeparator()
+        menu.addAction("Quit", self._quit)
+        self.tray.setContextMenu(menu)
+
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            logger.warning("No system tray available; tray entry point disabled")
+        self.tray.show()
 
     def _refresh_clients(self):
         clients = detect_clients()
@@ -91,14 +113,12 @@ class SobornostApp:
             if c.wid not in self.thumbnails:
                 logger.info("Adding client: wid=%s title=%r", c.wid, c.title)
                 tw = ThumbnailWindow(
-                    root=self.root,
                     app=self,
                     wid=c.wid,
                     title=c.title,
                     config=self.config,
                 )
                 self.thumbnails[c.wid] = tw
-                self._setup_thumbnail_x11(tw, c.wid)
                 damage_id = _native.create_damage(c.wid)
                 if damage_id >= 0:
                     self.client_damage[c.wid] = damage_id
@@ -149,27 +169,6 @@ class SobornostApp:
         else:
             logger.warning("No EVE process found running.")
 
-    def _setup_thumbnail_x11(self, tw: ThumbnailWindow, wid: int):
-        # On macOS, winfo_id() returns a MacDrawable pointer, not a
-        # CGWindowID. We identify the thumbnail by its unique title
-        # ("sobornost_{wid}") and look it up via NSApp.windows /
-        # CGWindowListCopyWindowInfo.  Wait a tick so the Tk window is
-        # registered with the window server before we search.
-        self.root.after(50, self._set_thumbnail_level, tw, wid)
-    def _topmost_target(self, tw: ThumbnailWindow):
-        if platform.system() == "Darwin":
-            return tw.win.title()
-        return tw.win.winfo_id()
-    def _set_thumbnail_level(self, tw: ThumbnailWindow, wid: int):
-        try:
-            level = _native.set_always_on_top(self._topmost_target(tw), True)
-            if level is False:
-                logger.warning("set_always_on_top failed for %r", tw.win.title())
-            else:
-                logger.debug("Thumbnail window level: %s", level)
-        except tk.TclError:
-            logger.debug("set_thumbnail_level: window gone for wid=%s", wid, exc_info=True)
-
     def _set_active_client(self, wid: int | None):
         self.active_client_wid = wid
         for tw in self.thumbnails.values():
@@ -212,20 +211,23 @@ class SobornostApp:
         self._set_active_client(next_wid)
 
     def _open_settings(self):
-        SettingsWindow(self.root, self.config, on_save=self._on_settings_save)
+        from sobornost.settings_dialog import open_settings_dialog
+
+        open_settings_dialog(self.config, on_save=self._on_settings_save)
 
     def _on_settings_save(self):
         for tw in self.thumbnails.values():
-            tw.win.attributes("-alpha", self.config.thumbnail_opacity)
+            tw.win.setOpacity(self.config.thumbnail_opacity)
             has_pos = self.config.per_client_position.get(tw._pos_key())
             if not has_pos:
                 tw._apply_geometry()
+        self._poll_timer.setInterval(self.config.preview_refresh_ms)
         self._refresh_clients()
         if self.active_client_wid is not None and self.active_client_wid in self.thumbnails:
             self.thumbnails[self.active_client_wid].set_active(True)
         self._register_hotkey()  # re-register in case hotkey changed
 
-    def _poll_loop(self):
+    def _poll_tick(self):
         if not self._drag_paused:
             # Battery: skip captures when no EVE window is frontmost. One query
             # for the frontmost pid beats calling is_app_frontmost per client.
@@ -251,13 +253,13 @@ class SobornostApp:
                 self._refresh_clients()
 
             # Periodically re-assert topmost (can be lost when other apps activate)
-            self._macos_topmost_count += 1
-            if self._macos_topmost_count >= 10:
-                self._macos_topmost_count = 0
+            self._topmost_count += 1
+            if self._topmost_count >= 10:
+                self._topmost_count = 0
                 for tw in self.thumbnails.values():
                     try:
                         tw._restore_topmost()
-                        _native.set_always_on_top(self._topmost_target(tw), True)
+                        _native.set_always_on_top(tw._topmost_target(), True)
                     except Exception:
                         logger.debug("failed to re-assert topmost for wid=%s", tw.wid, exc_info=True)
 
@@ -272,8 +274,6 @@ class SobornostApp:
                 self._cycle_clients()
         except Exception:
             logger.debug("hotkey poll failed", exc_info=True)
-
-        self.root.after(self.config.preview_refresh_ms, self._poll_loop)
 
     def _update_thumbnails(self):
         if self.dirty_wids:
@@ -293,13 +293,36 @@ class SobornostApp:
                 except Exception:
                     logger.debug("thumbnail refresh failed for wid=%s", tw.wid, exc_info=True)
 
+    def _on_sigint(self, *_args: object) -> None:
+        logger.info("SIGINT received, shutting down")
+        self._quit()
+
     def _quit(self):
+        if self._quit_done:
+            return
+        self._quit_done = True
+        self._poll_timer.stop()
+        self._sigint_timer.stop()
+        for tw in list(self.thumbnails.values()):
+            tw.destroy()
+        self.thumbnails.clear()
+        logger.debug("Thumbnails destroyed; disconnecting native backend")
+        sys.stderr.flush()
         _native.disconnect()
-        self.root.quit()
-        self.root.destroy()
+        self.app.quit()
 
     def run(self):
+        signal.signal(signal.SIGINT, self._on_sigint)
+
+        # Wakeup timer: gives the Python interpreter regular bytecode time inside
+        # Qt's native event loop so the SIGINT handler actually runs. Without this
+        # Ctrl+C can be swallowed by QApplication.exec().
+        self._sigint_timer = QTimer(self.app)
+        self._sigint_timer.setInterval(100)
+        self._sigint_timer.timeout.connect(lambda: None)
+        self._sigint_timer.start()
+
         try:
-            self.root.mainloop()
-        except KeyboardInterrupt:
+            return self.app.exec()
+        finally:
             self._quit()
