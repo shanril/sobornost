@@ -26,7 +26,7 @@ test: uv-sync
 	$(UV) pytest
 
 clean:
-	rm -rf build/ dist/ .venv/ .mypy_cache/ .ruff_cache/ *.egg-info/
+	rm -rf build/ dist/ .venv/ .mypy_cache/ .pytest_cache/ .ruff_cache/ *.egg-info/
 	rm -f packaging/sobornost.app/Contents/MacOS/sobornost
 	rm -f uv.lock
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true
