@@ -11,6 +11,7 @@ license=('MIT')
 depends=(
   'python'
   'python-pillow'
+  'python-pyside6'
 )
 makedepends=(
   'python-build'

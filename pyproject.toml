@@ -25,14 +25,38 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
 
+[tool.ruff.lint.per-file-ignores]
+# PySide6 Q_PROPERTY/Q_SLOT names must be CamelCase for QML interop.
+"sobornost/config_bridge.py" = ["N802", "N815"]
+"sobornost/thumbnail_window.py" = ["N802", "N815"]
+"sobornost/thumbnail_item.py" = ["N802", "N815"]
+
 [tool.ruff.format]
 quote-style = "double"
 
 [tool.setuptools.packages.find]
 include = ["sobornost*"]
 
+[tool.setuptools.package-data]
+sobornost = ["qml/*.qml"]
+
 [tool.pytest.ini_options]
 # Tests run against the source tree and stub the native extension
 # (see tests/conftest.py), so no compiled _native is required.
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.mypy]
+# Pre-existing: Pillow ships no type stubs; PySide6 stubs are not in this env.
+# Both imports resolve fine at runtime; silence the import-not-found noise.
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The @Property def name / @<prop>.setter def name pattern in
+# ConfigBridge (the standard PySide6 idiom) trips mypy's no-redef check.
+module = "sobornost.config_bridge"
+disable_error_code = ["no-redef"]
+
+[[tool.mypy.overrides]]
+module = "sobornost.thumbnail_window"
+disable_error_code = ["no-redef", "method-assign"]
