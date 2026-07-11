@@ -39,7 +39,7 @@ def open_settings_dialog(
     engine = QQmlApplicationEngine()
     from sobornost.config_bridge import ConfigBridge
 
-    bridge = ConfigBridge(config, on_save=on_save)
+    bridge = ConfigBridge(config, on_save=on_save, parent=engine)
     engine.rootContext().setContextProperty("bridge", bridge)
 
     qml_file = os.path.join(_qml_dir(), "Settings.qml")
