@@ -161,6 +161,19 @@ static void wid_wmclass(xcb_window_t w, char *buf, size_t bufsz) {
     free(r);
 }
 
+/* Helper: strip trailing control/garbage bytes from a C string. */
+static void strip_trailing_noise(char *s) {
+    if (!s) return;
+    size_t len = strlen(s);
+    while (len > 0) {
+        unsigned char c = (unsigned char)s[len - 1];
+        /* Remove trailing whitespace and control characters. */
+        if (c == '\t' || c == '\n' || c == '\r') {
+            s[--len] = '\0';
+        } else break;
+    }
+}
+
 /* Helper: get UTF-8 title via _NET_WM_NAME, fallback WM_NAME. */
 static char *wid_title(xcb_window_t w) {
     static char tmp[2048];
@@ -172,7 +185,13 @@ static char *wid_title(xcb_window_t w) {
             xcb_ewmh_get_wm_name_unchecked(&g_ewmh, w),
             &rep, NULL);
         if (s == 1 && rep.strings_len > 0 && rep.strings) {
-            strncpy(tmp, rep.strings, sizeof(tmp) - 1);
+            /* Use strings_len to bound the copy so we don't read past a
+             * non-null-terminated property (happens with Wine/Proton). */
+            size_t cl = rep.strings_len;
+            if (cl >= sizeof(tmp)) cl = sizeof(tmp) - 1;
+            memcpy(tmp, rep.strings, cl);
+            tmp[cl] = '\0';
+            strip_trailing_noise(tmp);
         }
         xcb_ewmh_get_utf8_strings_reply_wipe(&rep);
     }
@@ -186,6 +205,7 @@ static char *wid_title(xcb_window_t w) {
             if (l >= sizeof(tmp)) l = sizeof(tmp) - 1;
             memcpy(tmp, xcb_get_property_value(r), l);
             tmp[l] = '\0';
+            strip_trailing_noise(tmp);
         }
         free(r);
         free(e);

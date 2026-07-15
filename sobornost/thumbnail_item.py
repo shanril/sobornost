@@ -33,4 +33,4 @@ class ThumbnailPaintItem(QQuickPaintedItem):
 
     def paint(self, painter: QPainter) -> None:
         if self._image is not None:
-            painter.drawImage(0, 0, self._image)
+            painter.drawImage(self.boundingRect(), self._image)

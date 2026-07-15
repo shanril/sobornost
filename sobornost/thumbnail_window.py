@@ -210,7 +210,10 @@ class ThumbnailWindow:
     @property
     def character_name(self) -> str:
         parts = self.title.split(" - ", 1)
-        return parts[-1].strip() if len(parts) > 1 else ""
+        cn = parts[-1].strip() if len(parts) > 1 else ""
+        if cn:
+            cn = cn.rstrip('\r\n\t').rstrip()
+        return cn
 
     def _pos_key(self) -> str:
         cn = self.character_name
