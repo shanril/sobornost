@@ -2,19 +2,15 @@ import logging
 import os
 import sys
 
-# Must be set before tkinter is imported on macOS
-if sys.platform == "darwin":
-    base = sys.base_prefix
-    tcl = f"{base}/lib/tcl8.6"
-    if os.path.isdir(tcl):
-        os.environ.setdefault("TCL_LIBRARY", tcl)
-    tk = f"{base}/lib/tk8.6"
-    if os.path.isdir(tk):
-        os.environ.setdefault("TK_LIBRARY", tk)
+# On Linux, force the XCB Qt platform plugin so QWindow.winId() returns real X11
+# window ids that _native.set_always_on_top() can act on. Must be set before any
+# PySide6 import.
+if sys.platform.startswith("linux"):
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 from sobornost import _native
 
-# Set process name before tkinter initialises (controls app menu title)
+# Set process name before the application initialises (controls app menu title).
 if sys.platform == "darwin":
     _native.set_process_name("sobornost")
 

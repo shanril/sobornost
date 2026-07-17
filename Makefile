@@ -3,12 +3,15 @@
 UV := uv run
 PYTHON := $(UV) python
 
-TCL_LIB := $(shell $(PYTHON) -c "import tkinter; print(tkinter.Tcl().eval('info library'))" 2>/dev/null)
-
 all: build
 
+# TODO(phase-6-packaging): this target still drives the py2app backend, which
+# was built for Tkinter bundling (signal routing, TCL/TK dylibs) and has not
+# been reworked for PySide6. It will NOT produce a runnable PySide6 .app
+# (missing Qt framework bundling / qt.conf). Do not treat a successful exit
+# as a working bundle; that work is deferred to the Phase 6 packaging pass.
 build: uv-sync
-	@TCL_LIBRARY=$(TCL_LIB) TK_LIBRARY=$(TCL_LIB) $(PYTHON) setup.py py2app
+	@$(PYTHON) setup.py py2app
 
 dev: uv-sync
 	$(PYTHON) -m sobornost
@@ -26,7 +29,7 @@ test: uv-sync
 	$(UV) pytest
 
 clean:
-	rm -rf build/ dist/ .venv/ .mypy_cache/ .ruff_cache/ *.egg-info/
+	rm -rf build/ dist/ .venv/ .mypy_cache/ .pytest_cache/ .ruff_cache/ *.egg-info/
 	rm -f packaging/sobornost.app/Contents/MacOS/sobornost
 	rm -f uv.lock
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true

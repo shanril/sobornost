@@ -3,7 +3,6 @@ import platform
 import shutil
 import subprocess
 import sys
-import sysconfig
 import tempfile
 
 from setuptools import Extension, setup
@@ -28,11 +27,12 @@ if system == "Darwin":
         ],
     )
 elif system == "Linux":
-    # Stub — Linux support is not yet implemented.
-    # Importing _native raises NotImplementedError at runtime.
     ext = Extension(
         "sobornost._native",
         sources=["sobornost/_linux_utils.c"],
+        extra_compile_args=[],
+        extra_link_args=[],
+        libraries=["xcb", "xcb-ewmh", "xcb-damage", "xcb-keysyms"],
     )
 else:
     print(f"ERROR: unsupported platform: {system}", file=sys.stderr)
@@ -40,7 +40,8 @@ else:
 
 setup_kwargs = dict(
     ext_modules=[ext],
-    install_requires=["pillow"],
+    install_requires=["pillow", "PySide6"],
+    package_data={"sobornost": ["qml/*.qml", "resources/*.png"]},
 )
 
 # py2app configuration — standalone .app for macOS
@@ -83,32 +84,11 @@ if system == "Darwin":
 
             def run(self):
                 super().run()
-                self._bundle_tcltk()
-
-            def _bundle_tcltk(self):
                 from glob import glob
                 dist_dir = self.dist_dir or "dist"
                 apps = glob(os.path.join(dist_dir, "*.app"))
-                if not apps:
-                    return
-                app_path = apps[0]
-                bundle_lib = os.path.join(app_path, "Contents", "Resources", "lib")
-                os.makedirs(bundle_lib, exist_ok=True)
-                src_lib = sysconfig.get_config_var("LIBDIR")
-                if not src_lib:
-                    return
-                for name in ("libtcl8.6.dylib", "libtk8.6.dylib"):
-                    src = os.path.join(src_lib, name)
-                    if os.path.exists(src):
-                        shutil.copy2(src, bundle_lib)
-                        print(f"  bundled {name}")
-                for name in ("tcl8.6", "tk8.6"):
-                    src = os.path.join(src_lib, name)
-                    dst = os.path.join(bundle_lib, name)
-                    if os.path.isdir(src) and not os.path.isdir(dst):
-                        shutil.copytree(src, dst, symlinks=True)
-                        print(f"  bundled {name}/")
-                self._sign_app(app_path)
+                if apps:
+                    self._sign_app(apps[0])
 
             def _sign_app(self, app_path):
                 """Re-sign .app with a self-signed cert + hardened runtime
@@ -192,8 +172,8 @@ if system == "Darwin":
         options={
             "py2app": {
                 "argv_emulation": False,
-                "packages": ["sobornost", "PIL"],
-                "includes": ["tkinter"],
+                "packages": ["sobornost", "PIL", "PySide6"],
+                "excludes": ["tkinter"],
                 "plist": {
                     "CFBundleName": "sobornost",
                     "CFBundleDisplayName": "sobornost",
@@ -201,7 +181,7 @@ if system == "Darwin":
                     "CFBundleVersion": "0.1.0",
                     "CFBundleShortVersionString": "0.1.0",
                     "NSHighResolutionCapable": True,
-                    "LSUIElement": False,
+                    "LSUIElement": True,
                 },
             },
         },

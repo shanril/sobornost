@@ -68,8 +68,8 @@ uv run python -m sobornost
 4. **Click** a thumbnail to switch to that client
 5. **Drag** a thumbnail to reposition it
 6. **Ctrl+Click** a thumbnail to minimize that client
-7. **File → Settings** to adjust thumbnail size, opacity, refresh rate, and more
-8. **Clients → Refresh Clients** to re-scan for new windows
+7. Use the tray icon → **Settings** to adjust thumbnail size, opacity, refresh rate, and more
+8. Use the tray icon → **Cycle Clients** (or the global hotkey, default `Ctrl+``) to switch between clients. The client list refreshes automatically every ~2s, so newly launched clients are picked up without manual action.
 
 ### Qtile Configuration (Linux only)
 
@@ -92,20 +92,22 @@ Settings are stored in `~/.config/sobornost/config.json`.
 | `preview_refresh_ms` | `200` | Thumbnail update interval |
 | `active_client_highlight_color` | `"#00ff00"` | Border color for active client |
 | `label_overlay` | `true` | Show character name on thumbnail |
+| `label_font_size` | `13` | Font size for thumbnail label overlay (6–48) |
 | `track_client_locations` | `true` | Remember thumbnail positions |
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│              Python / Tkinter (sobornost)        │
-│  ┌──────┐ ┌──────┐ ┌──────┐   ┌───────────┐      │
-│  │ app  │ │config│ │  ui  │   │thumbnails │      │
-│  │(loop)│ │(JSON)│ │(tk.) │   │(Toplevel) │      │
-│  └──┬───┘ └──────┘ └──────┘   └─────┬─────┘      │
-│     │    detector/capturer/switcher │            │
-│     └──────────────┬────────────────┘            │
-└────────────────────┼─────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│            Python / PySide6  (sobornost)                    │
+│  ┌──────┐ ┌──────┐ ┌──────────┐ ┌────────────┐ ┌────────┐  │
+│  │ app  │ │config│ │  tray    │ │ QML windows │ │settings│  │
+│  │(loop)│ │(JSON)│ │(QSystem- │ │(QQuickWindow│ │(QML dlg)│  │
+│  │      │ │      │ │TrayIcon) │ │  +QSG paint)│ │        │  │
+│  └──┬───┘ └──────┘ └──────────┘ └─────┬──────┘ └────────┘  │
+│     │     detector/capturer/switcher │                     │
+│     └──────────────┬─────────────────┘                     │
+└────────────────────┼────────────────────────────────────────┘
                      │ C Python API
           ┌──────────┴──────────┐
 ┌─────────┴─────────┐ ┌─────────┴─────────┐
@@ -146,13 +148,19 @@ sobornost/
 ├── _macos_utils.m       # C extension (ObjC, CoreGraphics + AX)
 ├── _linux_utils.c       # C extension (XCB, Linux — stub, not impl.)
 ├── _native.pyi          # Type stubs (shared interface for both)
-├── app.py               # Main controller with platform gate
+├── app.py               # Main controller (QTimer poll loop, tray menu)
 ├── capturer.py          # Thumbnail capture (calls C ext)
 ├── config.py            # JSON config
+├── config_bridge.py     # Q_PROPERTY bridge exposing Config to Settings.qml
 ├── detector.py          # Window detection
 ├── switcher.py          # Window focus/minimize
-├── thumbnails.py        # Preview windows
-└── ui.py                # Settings GUI (ttk Notebook)
+├── thumbnail_window.py  # QQuickWindow + QML host per thumbnail
+├── thumbnail_item.py    # QQuickPaintedItem ( QPainter draws the live frame )
+├── settings_dialog.py   # Loads Settings.qml, runs modal QEventLoop
+├── qml/
+│   ├── Thumbnail.qml    # Per-thumbnail view (border, paint item, drag area)
+│   └── Settings.qml     # Settings dialog (size/opacity/refresh/hotkey)
+└── resources/           # Tray icon PNG
 
 tests/                   # pytest suite (config, keycodes, detector)
 └── conftest.py          # stubs the native _native ext so tests need no build
