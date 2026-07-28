@@ -32,6 +32,29 @@ Item {
         styleColor: "#A0000000"
     }
 
+    Column {
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: (bridge.active ? bridge.highlightThickness : 0) + 3
+        anchors.bottomMargin: (bridge.active ? bridge.highlightThickness : 0) + 2
+        visible: bridge.statsOverlay && bridge.statsLines.length > 0
+        spacing: 0
+
+        Repeater {
+            model: bridge.statsLines
+
+            delegate: Text {
+                required property var modelData
+                text: modelData.text
+                color: modelData.color
+                font.pixelSize: bridge.labelFontSize
+                lineHeight: 0.9
+                style: Text.Outline
+                styleColor: "#A0000000"
+            }
+        }
+    }
+
     Item {
         id: dragDummy
         visible: false

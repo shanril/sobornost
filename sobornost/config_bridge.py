@@ -20,6 +20,11 @@ class ConfigBridge(QObject):
         self._highlight_color: str = config.active_client_highlight_color
         self._label_overlay: bool = config.label_overlay
         self._label_font_size: int = config.label_font_size
+        self._stats_enabled: bool = config.stats_enabled
+        self._stats_endpoint: str = config.stats_endpoint
+        self._stats_refresh_ms: int = config.stats_refresh_ms
+        self._stats_dps_window_secs: int = config.stats_dps_window_secs
+        self._stats_mining_window_secs: int = config.stats_mining_window_secs
 
         active_mods = set(config.hotkey_modifiers or [])
         self._ctrl_mod = "Control" in active_mods
@@ -124,6 +129,66 @@ class ConfigBridge(QObject):
             self._label_font_size = value
             self._labelFontSizeChanged.emit(value)
 
+    _statsEnabledChanged = Signal(bool)
+
+    @Property(bool, notify=_statsEnabledChanged)
+    def statsEnabled(self) -> bool:
+        return self._stats_enabled
+
+    @statsEnabled.setter
+    def statsEnabled(self, value: bool) -> None:
+        if self._stats_enabled != value:
+            self._stats_enabled = value
+            self._statsEnabledChanged.emit(value)
+
+    _statsEndpointChanged = Signal(str)
+
+    @Property(str, notify=_statsEndpointChanged)
+    def statsEndpoint(self) -> str:
+        return self._stats_endpoint
+
+    @statsEndpoint.setter
+    def statsEndpoint(self, value: str) -> None:
+        if self._stats_endpoint != value:
+            self._stats_endpoint = value
+            self._statsEndpointChanged.emit(value)
+
+    _statsRefreshMsChanged = Signal(int)
+
+    @Property(int, notify=_statsRefreshMsChanged)
+    def statsRefreshMs(self) -> int:
+        return self._stats_refresh_ms
+
+    @statsRefreshMs.setter
+    def statsRefreshMs(self, value: int) -> None:
+        if self._stats_refresh_ms != value:
+            self._stats_refresh_ms = value
+            self._statsRefreshMsChanged.emit(value)
+
+    _statsDpsWindowSecsChanged = Signal(int)
+
+    @Property(int, notify=_statsDpsWindowSecsChanged)
+    def statsDpsWindowSecs(self) -> int:
+        return self._stats_dps_window_secs
+
+    @statsDpsWindowSecs.setter
+    def statsDpsWindowSecs(self, value: int) -> None:
+        if self._stats_dps_window_secs != value:
+            self._stats_dps_window_secs = value
+            self._statsDpsWindowSecsChanged.emit(value)
+
+    _statsMiningWindowSecsChanged = Signal(int)
+
+    @Property(int, notify=_statsMiningWindowSecsChanged)
+    def statsMiningWindowSecs(self) -> int:
+        return self._stats_mining_window_secs
+
+    @statsMiningWindowSecs.setter
+    def statsMiningWindowSecs(self, value: int) -> None:
+        if self._stats_mining_window_secs != value:
+            self._stats_mining_window_secs = value
+            self._statsMiningWindowSecsChanged.emit(value)
+
     _hotkeyDescChanged = Signal()
 
     @Property(bool, notify=_hotkeyDescChanged)
@@ -213,6 +278,11 @@ class ConfigBridge(QObject):
         self._config.active_client_highlight_color = self._highlight_color
         self._config.label_overlay = self._label_overlay
         self._config.label_font_size = self._label_font_size
+        self._config.stats_enabled = self._stats_enabled
+        self._config.stats_endpoint = self._stats_endpoint
+        self._config.stats_refresh_ms = self._stats_refresh_ms
+        self._config.stats_dps_window_secs = self._stats_dps_window_secs
+        self._config.stats_mining_window_secs = self._stats_mining_window_secs
         self._config.hotkey_modifiers = self._active_mods()
         self._config.hotkey_key = self._hotkey_key
         self._config.save()

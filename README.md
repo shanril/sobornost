@@ -17,6 +17,7 @@ Licensed under MIT.
 - **JSON config** — settings saved to `~/.config/sobornost/config.json`
 - **Undecorated windows** — borderless preview windows
 - **Ctrl+Click minimize** — minimize an EVE client from its thumbnail
+- **Stats overlay** — optional per-character mining (m³) and incoming/outgoing DPS from a game-log summary endpoint
 - **Automatic client detection** — windows whose title starts with `EVE` are detected; the `EVE Launcher` is always excluded
 
 ## Requirements
@@ -94,6 +95,11 @@ Settings are stored in `~/.config/sobornost/config.json`.
 | `label_overlay` | `true` | Show character name on thumbnail |
 | `label_font_size` | `13` | Font size for thumbnail label overlay (6–48) |
 | `track_client_locations` | `true` | Remember thumbnail positions |
+| `stats_enabled` | `false` | Show mining/DPS stats overlay on thumbnails |
+| `stats_endpoint` | `"http://localhost:8080/api/logs/summary"` | Game-log summary endpoint base URL |
+| `stats_refresh_ms` | `5000` | Stats poll interval (1000–60000) |
+| `stats_dps_window_secs` | `15` | `last` window (seconds) used for DPS stats |
+| `stats_mining_window_secs` | `300` | `last` window (seconds) used for mining stats |
 
 ## Architecture
 
@@ -157,12 +163,13 @@ sobornost/
 ├── thumbnail_window.py  # QQuickWindow + QML host per thumbnail
 ├── thumbnail_item.py    # QQuickPaintedItem ( QPainter draws the live frame )
 ├── settings_dialog.py   # Loads Settings.qml, runs modal QEventLoop
+├── stats_client.py      # Polls game-log summary endpoint (QNetworkAccessManager)
 ├── qml/
 │   ├── Thumbnail.qml    # Per-thumbnail view (border, paint item, drag area)
-│   └── Settings.qml     # Settings dialog (size/opacity/refresh/hotkey)
+│   └── Settings.qml     # Settings dialog (size/opacity/refresh/hotkey/stats)
 └── resources/           # Tray icon PNG
 
-tests/                   # pytest suite (config, keycodes, detector)
+tests/                   # pytest suite (config, keycodes, detector, stats)
 └── conftest.py          # stubs the native _native ext so tests need no build
 ```
 
