@@ -25,6 +25,8 @@ def _qml_dir() -> str:
 class ThumbnailBridge(QObject):
     _activeChanged = Signal(bool)
     _characterNameChanged = Signal(str)
+    _statsLinesChanged = Signal()
+    _statsOverlayChanged = Signal(bool)
 
     def __init__(self, tw: ThumbnailWindow, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -39,6 +41,8 @@ class ThumbnailBridge(QObject):
         self._opacity: float = cfg.thumbnail_opacity
         self._active: bool = False
         self._character_name: str = tw.character_name
+        self._stats_lines: list[dict[str, str]] = []
+        self._stats_overlay: bool = cfg.stats_enabled
         self._drag_start_gx: float = 0.0
         self._drag_start_gy: float = 0.0
         self._drag_start_wx: int = 0
@@ -91,6 +95,26 @@ class ThumbnailBridge(QObject):
         if self._character_name != value:
             self._character_name = value
             self._characterNameChanged.emit(value)
+
+    @Property(list, notify=_statsLinesChanged)
+    def statsLines(self) -> list[dict[str, str]]:
+        return self._stats_lines
+
+    @statsLines.setter
+    def statsLines(self, value: list[dict[str, str]]) -> None:
+        if self._stats_lines != value:
+            self._stats_lines = value
+            self._statsLinesChanged.emit()
+
+    @Property(bool, notify=_statsOverlayChanged)
+    def statsOverlay(self) -> bool:
+        return self._stats_overlay
+
+    @statsOverlay.setter
+    def statsOverlay(self, value: bool) -> None:
+        if self._stats_overlay != value:
+            self._stats_overlay = value
+            self._statsOverlayChanged.emit(value)
 
     @Slot(float, float)
     def dragStarted(self, gx: float, gy: float) -> None:
@@ -251,6 +275,14 @@ class ThumbnailWindow:
         self._active = active
         self._apply_geometry()
         self.refresh()
+
+    def set_stats(self, lines: list[dict[str, str]]) -> None:
+        if not self._destroyed:
+            self.bridge.statsLines = lines
+
+    def apply_stats_config(self) -> None:
+        if not self._destroyed:
+            self.bridge.statsOverlay = self.config.stats_enabled
 
     def update_title(self, title: str) -> None:
         if title and title != self.title:

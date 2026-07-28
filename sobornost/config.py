@@ -28,6 +28,11 @@ class Config:
     per_client_position: dict[str, dict] = field(default_factory=dict)
     hotkey_modifiers: list[str] = field(default_factory=lambda: ["Control"])
     hotkey_key: str = "grave"
+    stats_enabled: bool = False
+    stats_endpoint: str = "http://localhost:8080/api/logs/summary"
+    stats_refresh_ms: int = 5000
+    stats_dps_window_secs: int = 15
+    stats_mining_window_secs: int = 300
 
     @classmethod
     def load(cls) -> Config:
