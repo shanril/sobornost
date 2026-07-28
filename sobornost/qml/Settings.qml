@@ -27,6 +27,7 @@ ApplicationWindow {
 
             TabButton { text: "General" }
             TabButton { text: "Display" }
+            TabButton { text: "Stats" }
         }
 
         StackLayout {
@@ -179,6 +180,58 @@ ApplicationWindow {
                         Layout.preferredWidth: 140
                         value: bridge.labelFontSize
                         onValueModified: bridge.labelFontSize = value
+                    }
+                }
+            }
+
+            // ---- Stats tab ----
+            ScrollView {
+                contentWidth: availableWidth
+                clip: true
+
+                GridLayout {
+                    width: parent.width
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 6
+                    anchors.margins: 12
+
+                    CheckBox {
+                        text: "Enable Stats Overlay"
+                        Layout.columnSpan: 2
+                        checked: bridge.statsEnabled
+                        onToggled: bridge.statsEnabled = checked
+                    }
+
+                    Label { text: "Endpoint URL:" }
+                    TextField {
+                        Layout.fillWidth: true
+                        text: bridge.statsEndpoint
+                        onTextEdited: bridge.statsEndpoint = text
+                    }
+
+                    Label { text: "Update Interval (ms):" }
+                    SpinBox {
+                        from: 1000; to: 60000; stepSize: 1000; editable: true
+                        Layout.preferredWidth: 140
+                        value: bridge.statsRefreshMs
+                        onValueModified: bridge.statsRefreshMs = value
+                    }
+
+                    Label { text: "DPS Window (s):" }
+                    SpinBox {
+                        from: 5; to: 600; stepSize: 5; editable: true
+                        Layout.preferredWidth: 140
+                        value: bridge.statsDpsWindowSecs
+                        onValueModified: bridge.statsDpsWindowSecs = value
+                    }
+
+                    Label { text: "Mining Window (s):" }
+                    SpinBox {
+                        from: 30; to: 3600; stepSize: 30; editable: true
+                        Layout.preferredWidth: 140
+                        value: bridge.statsMiningWindowSecs
+                        onValueModified: bridge.statsMiningWindowSecs = value
                     }
                 }
             }

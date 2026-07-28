@@ -15,6 +15,7 @@ from sobornost import _native
 from sobornost._keycodes import describe_hotkey, hotkey_to_carbon, hotkey_to_x11
 from sobornost.config import Config
 from sobornost.detector import EVE_TITLE_FILTER, detect_clients
+from sobornost.stats_client import StatsClient, format_stats
 from sobornost.switcher import focus_client
 from sobornost.thumbnail_window import ThumbnailWindow
 
@@ -58,6 +59,15 @@ class SobornostApp:
         self._hotkey_registered = False
         self._topmost_count = 0
         self._quit_done = False
+
+        self.stats_client = StatsClient(self.app)
+        self.stats_client.configure(
+            self.config.stats_endpoint,
+            self.config.stats_refresh_ms,
+            self.config.stats_dps_window_secs,
+            self.config.stats_mining_window_secs,
+            self.config.stats_enabled,
+        )
 
         self._setup_tray()
         self._refresh_clients()
@@ -221,6 +231,16 @@ class SobornostApp:
             has_pos = self.config.per_client_position.get(tw._pos_key())
             if not has_pos:
                 tw._apply_geometry()
+        self.stats_client.configure(
+            self.config.stats_endpoint,
+            self.config.stats_refresh_ms,
+            self.config.stats_dps_window_secs,
+            self.config.stats_mining_window_secs,
+            self.config.stats_enabled,
+        )
+        for tw in self.thumbnails.values():
+            tw.apply_stats_config()
+        self._push_stats()
         self._poll_timer.setInterval(self.config.preview_refresh_ms)
         self._refresh_clients()
         if self.active_client_wid is not None and self.active_client_wid in self.thumbnails:
@@ -275,6 +295,16 @@ class SobornostApp:
         except Exception:
             logger.debug("hotkey poll failed", exc_info=True)
 
+        self._push_stats()
+
+    def _push_stats(self):
+        if not self.config.stats_enabled:
+            return
+        snapshot = self.stats_client.snapshot()
+        for tw in self.thumbnails.values():
+            data = snapshot.get(tw.character_name)
+            tw.set_stats(format_stats(data) if data else [])
+
     def _update_thumbnails(self):
         if self.dirty_wids:
             for wid in list(self.dirty_wids):
@@ -303,6 +333,7 @@ class SobornostApp:
         self._quit_done = True
         self._poll_timer.stop()
         self._sigint_timer.stop()
+        self.stats_client.stop()
         for tw in list(self.thumbnails.values()):
             tw.destroy()
         self.thumbnails.clear()
