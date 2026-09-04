@@ -1,6 +1,6 @@
 # sobornost
 
-EVE Online client preview and switcher — primary target macOS, Linux not yet implemented.
+EVE Online client preview and switcher for macOS and Linux (X11/XWayland).
 
 Inspired by [eve-o-preview](https://github.com/Proopai/eve-o-preview). Detects running EVE Online clients, displays live thumbnail previews, and lets you switch between them with a single click.
 
@@ -8,7 +8,7 @@ Licensed under MIT.
 
 ## Features
 
-- **Live thumbnails** — real-time previews via CoreGraphics (macOS) or X Composite (Linux)
+- **Live thumbnails** — real-time previews via CoreGraphics (macOS) or XCB/X11 image capture (Linux)
 - **Click to switch** — click a thumbnail to focus and raise that client (AX API on macOS, EWMH on Linux)
 - **Draggable previews** — reposition thumbnails by dragging; positions persist per client
 - **Zoom on hover** — hover a thumbnail for a larger preview
@@ -25,7 +25,7 @@ Licensed under MIT.
 | Platform | Requirements |
 |---|---|
 | **macOS** | Python 3.9+, Xcode CLI tools, Screen Recording permission (System Settings → Privacy & Security) |
-| **Linux** | Python 3.9+, X11 (Xorg/XWayland), compositor recommended (`picom` etc.), EWMH-compatible WM |
+| **Linux** | Python 3.9+, X11 (Xorg/XWayland), the Qt XCB platform plugin, and an EWMH-compatible WM |
 
 ### macOS
 
@@ -33,13 +33,20 @@ Grant **Screen Recording** permission when prompted on first run. Accessibility 
 
 ### Linux
 
+Linux support uses the compiled `_linux_utils.c` XCB backend. It enumerates EWMH
+client windows, captures window or root-window pixels through X11, tracks damage,
+and handles focus, minimizing, always-on-top, geometry, and global hotkeys.
+An X11-compatible display (Xorg or XWayland) is required; a compositor such as
+`picom` is recommended for reliable on-screen capture of accelerated windows.
+
 ```bash
 # Arch
 sudo pacman -S python python-xcb-proto libxcb xcb-util xcb-util-image \
                xcb-util-keysyms xcb-util-wm
 ```
 
-> **Note**: Linux support is not yet implemented. The `_linux_utils.c` extension compiles but raises `NotImplementedError` on import.
+The native extension is compiled as part of the source installation/build and
+links against `xcb`, `xcb-ewmh`, `xcb-damage`, and `xcb-keysyms`.
 
 ## Installation
 
@@ -49,14 +56,19 @@ sudo pacman -S python python-xcb-proto libxcb xcb-util xcb-util-image \
 git clone https://github.com/shanril/sobornost.git
 cd sobornost
 
-# Use the Makefile (recommended)
-make dev       # run directly
-make build     # build dist/sobornost.app
-make run       # build + open
+# Use the source-tree development target
+make dev       # run directly; the supported execution path
 
 # Or run with uv directly
 uv run python -m sobornost
 ```
+
+`make build` and `make run` are currently packaging targets for the incomplete
+PySide6 macOS `.app` path. `make build` invokes py2app, but the current output
+does not bundle the Qt frameworks and `qt.conf` needed for a runnable PySide6
+application; `make run` only builds and opens that artifact. Use `make dev` (or
+the equivalent `uv run` command) to run from source. On Linux, use the source
+path or the AUR source-build/install path rather than a bundled `.app`.
 
 ## Usage
 
@@ -89,12 +101,15 @@ Settings are stored in `~/.config/sobornost/config.json`.
 |-|-|-|
 | `thumbnail_width` | `320` | Preview width in pixels |
 | `thumbnail_height` | `200` | Preview height in pixels |
-| `thumbnail_opacity` | `0.85` | Preview opacity (0.2–1.0) |
+| `thumbnail_opacity` | `1.0` | Preview opacity (0.2–1.0) |
 | `preview_refresh_ms` | `200` | Thumbnail update interval |
 | `active_client_highlight_color` | `"#00ff00"` | Border color for active client |
+| `active_client_highlight_thickness` | `3` | Border thickness for active client |
 | `label_overlay` | `true` | Show character name on thumbnail |
 | `label_font_size` | `13` | Font size for thumbnail label overlay (6–48) |
 | `track_client_locations` | `true` | Remember thumbnail positions |
+| `hotkey_modifiers` | `["Control"]` | Modifier keys for client switching |
+| `hotkey_key` | `"grave"` | Key for client switching |
 | `stats_enabled` | `false` | Show mining/DPS stats overlay on thumbnails |
 | `stats_endpoint` | `"http://localhost:8080/api/logs/summary"` | Game-log summary endpoint base URL |
 | `stats_refresh_ms` | `5000` | Stats poll interval (1000–60000) |
@@ -106,25 +121,21 @@ Settings are stored in `~/.config/sobornost/config.json`.
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │            Python / PySide6  (sobornost)                    │
-│  ┌──────┐ ┌──────┐ ┌──────────┐ ┌────────────┐ ┌────────┐  │
-│  │ app  │ │config│ │  tray    │ │ QML windows │ │settings│  │
-│  │(loop)│ │(JSON)│ │(QSystem- │ │(QQuickWindow│ │(QML dlg)│  │
-│  │      │ │      │ │TrayIcon) │ │  +QSG paint)│ │        │  │
-│  └──┬───┘ └──────┘ └──────────┘ └─────┬──────┘ └────────┘  │
-│     │     detector/capturer/switcher │                     │
-│     └──────────────┬─────────────────┘                     │
-└────────────────────┼────────────────────────────────────────┘
-                     │ C Python API
+│  app/config/detector/capturer/switcher                     │
+│  QML windows + QQuickPaintedItem; settings bridge           │
+│  tray, JSON config, and QTimer polling                      │
+└───────────────────────────────┬─────────────────────────────┘
+                                │ C Python API
           ┌──────────┴──────────┐
 ┌─────────┴─────────┐ ┌─────────┴─────────┐
 │  _macos_utils.m   │ │  _linux_utils.c   │
-│ (ObjC, macOS)     │ │(XCB, Linux — stub)│
+│ (ObjC, macOS)     │ │(XCB, Linux)       │
 │ CoreGraphics + AX │ │                   │
 └─────────┬─────────┘ └─────────┬─────────┘
           │                      │
 ┌─────────┴─────────┐ ┌─────────┴─────────┐
-│  macOS WindowSvr  │ │  X11 Server (Xorg)│
-│ (CG + AX APIs)    │ │  (not implemented)│
+│  macOS WindowSvr  │ │ X11 Server        │
+│ (CG + AX APIs)    │ │ (Xorg / XWayland) │
 └───────────────────┘ └───────────────────┘
 ```
 
@@ -132,12 +143,12 @@ Settings are stored in `~/.config/sobornost/config.json`.
 
 ```bash
 # Common tasks (see Makefile)
-make build        # build dist/sobornost.app
-make run          # build + open
+make build        # py2app target; currently incomplete PySide6 bundle
+make run          # build + open the incomplete bundle
 make dev          # run directly (no .app)
 make lint         # ruff check
 make typecheck    # mypy
-make test         # pytest (native ext is stubbed — see tests/conftest.py)
+make test         # pytest (tests stub _native — see tests/conftest.py)
 make clean        # remove build artifacts
 
 # Or run with uv directly
@@ -148,11 +159,13 @@ uv run pytest
 SOBORNOST_LOG_LEVEL=DEBUG uv run python -m sobornost
 
 # Code structure
+# sobornost/ contains 13 top-level Python modules, 2 platform C extensions,
+# and one shared native-interface type stub.
 sobornost/
 ├── __init__.py          # Package init
 ├── __main__.py          # Entry: python -m sobornost
 ├── _macos_utils.m       # C extension (ObjC, CoreGraphics + AX)
-├── _linux_utils.c       # C extension (XCB, Linux — stub, not impl.)
+├── _linux_utils.c       # C extension (XCB/X11 capture and window management)
 ├── _native.pyi          # Type stubs (shared interface for both)
 ├── app.py               # Main controller (QTimer poll loop, tray menu)
 ├── capturer.py          # Thumbnail capture (calls C ext)
@@ -161,7 +174,7 @@ sobornost/
 ├── detector.py          # Window detection
 ├── switcher.py          # Window focus/minimize
 ├── thumbnail_window.py  # QQuickWindow + QML host per thumbnail
-├── thumbnail_item.py    # QQuickPaintedItem ( QPainter draws the live frame )
+├── thumbnail_item.py    # QQuickPaintedItem (QPainter draws the live frame)
 ├── settings_dialog.py   # Loads Settings.qml, runs modal QEventLoop
 ├── stats_client.py      # Polls game-log summary endpoint (QNetworkAccessManager)
 ├── qml/
@@ -170,8 +183,21 @@ sobornost/
 └── resources/           # Tray icon PNG
 
 tests/                   # pytest suite (config, keycodes, detector, stats)
-└── conftest.py          # stubs the native _native ext so tests need no build
+└── conftest.py          # installs a fake _native so tests need no native build
 ```
+
+Tests run against the source tree. `tests/conftest.py` installs a pure-Python
+`sobornost._native` fake before package import, so the test suite does not
+exercise live X11 or macOS capture.
+
+## Known limitations
+
+- Linux requires an X11-compatible display (Xorg or XWayland); native Wayland
+  operation is not supported.
+- macOS requires Screen Recording permission. Accessibility permission is
+  optional and enables focus switching.
+- The AUR package is a source-build/install path, not a bundled desktop
+  application.
 
 ## License
 
