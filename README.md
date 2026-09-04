@@ -18,7 +18,7 @@ Licensed under MIT.
 - **Undecorated windows** — borderless preview windows
 - **Ctrl+Click minimize** — minimize an EVE client from its thumbnail
 - **Stats overlay** — optional per-character mining (m³) and incoming/outgoing DPS from a game-log summary endpoint
-- **Automatic client detection** — windows whose title starts with `EVE` are detected; the `EVE Launcher` is always excluded
+- **Automatic client detection** — windows titled exactly `EVE` or `EVE - <character>` are detected; the `EVE Launcher` is always excluded
 
 ## Requirements
 
