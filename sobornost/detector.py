@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sobornost import _native
 
-# EVE Online client windows always have titles beginning with "EVE".
+# EVE Online client windows are titled exactly "EVE" or "EVE - <character>".
 EVE_TITLE_FILTER = "EVE"
 # The launcher matches the title filter above but is not a game client,
 # so it is always excluded.
@@ -18,6 +18,10 @@ class Client:
 
     def __repr__(self) -> str:
         return f"Client(wid={self.wid}, title={self.title!r})"
+
+
+def _is_eve_client_title(title: str) -> bool:
+    return title == EVE_TITLE_FILTER or title.startswith(f"{EVE_TITLE_FILTER} - ")
 
 
 def detect_clients(
@@ -36,6 +40,8 @@ def detect_clients(
             continue
         seen_wids.add(wid)
         title = w.get("title", "")
+        if title_filter == EVE_TITLE_FILTER and not _is_eve_client_title(title):
+            continue
         if exclude_filter and exclude_filter.lower() in title.lower():
             continue
         clients.append(Client(

@@ -41,11 +41,26 @@ def test_maps_window_fields(windows):
 
 
 def test_missing_optional_fields_get_defaults(windows):
-    windows([{"id": 2}])
+    windows([{"id": 2, "title": "EVE"}])
     [client] = detect_clients()
-    assert client.title == ""
+    assert client.title == "EVE"
     assert client.pid == 0
     assert client.wm_class == ""
+
+
+@pytest.mark.parametrize("title", ["EVE", "EVE - Alpha"])
+def test_accepts_exact_eve_client_titles(windows, title):
+    windows([{"id": 1, "title": title}])
+    assert [client.title for client in detect_clients()] == [title]
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["EVE Online", "EVELand", "I love eve", "eve", "EVE- Alpha", ""],
+)
+def test_rejects_non_client_eve_titles(windows, title):
+    windows([{"id": 1, "title": title}])
+    assert detect_clients() == []
 
 
 def test_excludes_launcher_window(windows):
@@ -73,7 +88,7 @@ def test_deduplicates_by_window_id(windows):
 
 
 def test_empty_exclude_filter_keeps_everything(windows):
-    windows([{"id": 1, "title": "EVE Launcher"}])
+    windows([{"id": 1, "title": "EVE - Alpha"}])
     assert len(detect_clients(exclude_filter="")) == 1
 
 
