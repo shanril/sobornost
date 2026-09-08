@@ -14,7 +14,7 @@ Licensed under MIT.
 - **Zoom on hover** — hover a thumbnail for a larger preview
 - **Always on top** — thumbnails stay above game windows
 - **Settings UI** — thumbnail size, opacity, refresh rate, highlight color, switch hotkey
-- **JSON config** — settings saved to `~/.config/sobornost/config.json`
+- **JSON config** — settings follow `XDG_CONFIG_HOME` (normally `~/.config/sobornost/config.json`)
 - **Undecorated windows** — borderless preview windows
 - **Ctrl+Click minimize** — minimize an EVE client from its thumbnail
 - **Stats overlay** — optional per-character mining (m³) and incoming/outgoing DPS from a game-log summary endpoint
@@ -49,6 +49,47 @@ The native extension is compiled as part of the source installation/build and
 links against `xcb`, `xcb-ewmh`, `xcb-damage`, and `xcb-keysyms`.
 
 ## Installation
+
+### Flatpak (Bazzite and other x86_64 Linux distributions)
+
+The GitHub Actions `Flatpak` workflow builds an unsigned
+`sobornost-x86_64.flatpak` bundle against
+`org.freedesktop.Platform//25.08`. It is published only as the
+`sobornost-x86_64` workflow artifact; no GitHub Release is created. On the
+workflow run page, download that artifact and extract it, or use the GitHub
+CLI:
+
+```bash
+gh run download RUN_ID --name sobornost-x86_64
+```
+
+Install and launch the extracted bundle:
+
+```bash
+flatpak install --user ./sobornost-x86_64.flatpak
+flatpak run io.github.shanril.sobornost
+```
+
+To upgrade from a newly downloaded artifact, reinstall it. To remove the app:
+
+```bash
+flatpak install --user --reinstall ./sobornost-x86_64.flatpak
+flatpak uninstall --user io.github.shanril.sobornost
+```
+
+The bundle is intended for KDE Wayland when both EVE and Sobornost use the
+same XWayland display. Native Wayland window discovery and capture are not
+supported. The sandbox has X11, shared IPC, DRI, network, and KDE
+StatusNotifier access, but no host-home or general filesystem access. Network
+access allows the optional statistics endpoint, including one bound to
+localhost.
+
+For a local build (with Flathub configured and `flatpak-builder` installed):
+
+```bash
+make flatpak          # writes dist/sobornost-x86_64.flatpak
+make flatpak-install  # builds and installs/reinstalls it for the current user
+```
 
 ### Manual
 
@@ -95,7 +136,10 @@ def float_sobornost(client):
 
 ## Configuration
 
-Settings are stored in `~/.config/sobornost/config.json`.
+Settings follow the XDG base-directory convention. They are stored in
+`$XDG_CONFIG_HOME/sobornost/config.json`, falling back to
+`~/.config/sobornost/config.json`. Flatpak therefore persists them at
+`~/.var/app/io.github.shanril.sobornost/config/sobornost/config.json`.
 
 | Key | Default | Description |
 |-|-|-|
@@ -149,6 +193,8 @@ make dev          # run directly (no .app)
 make lint         # ruff check
 make typecheck    # mypy
 make test         # pytest (tests stub _native — see tests/conftest.py)
+make flatpak      # build dist/sobornost-x86_64.flatpak (Linux x86_64)
+make flatpak-install # build and install/reinstall the Flatpak for this user
 make clean        # remove build artifacts
 
 # Or run with uv directly
@@ -194,6 +240,7 @@ exercise live X11 or macOS capture.
 
 - Linux requires an X11-compatible display (Xorg or XWayland); native Wayland
   operation is not supported.
+- On Wayland, EVE and Sobornost must be connected to the same XWayland display.
 - macOS requires Screen Recording permission. Accessibility permission is
   optional and enables focus switching.
 - The AUR package is a source-build/install path, not a bundled desktop

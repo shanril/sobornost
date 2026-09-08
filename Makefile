@@ -1,7 +1,12 @@
-.PHONY: all clean dev lint typecheck test build run
+.PHONY: all clean dev lint typecheck test build run flatpak flatpak-install
 
 UV := uv run
 PYTHON := $(UV) python
+FLATPAK_APP_ID := io.github.shanril.sobornost
+FLATPAK_MANIFEST := packaging/flatpak/$(FLATPAK_APP_ID).yml
+FLATPAK_BUILD_DIR := build/flatpak
+FLATPAK_REPO_DIR := build/flatpak-repo
+FLATPAK_BUNDLE := dist/sobornost-x86_64.flatpak
 
 all: build
 
@@ -18,6 +23,17 @@ dev: uv-sync
 
 run: build
 	open dist/sobornost.app
+
+flatpak:
+	mkdir -p dist
+	flatpak-builder --arch=x86_64 --force-clean --user --install-deps-from=flathub \
+		--repo=$(FLATPAK_REPO_DIR) $(FLATPAK_BUILD_DIR) $(FLATPAK_MANIFEST)
+	flatpak build-bundle --arch=x86_64 \
+		--runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+		$(FLATPAK_REPO_DIR) $(FLATPAK_BUNDLE) $(FLATPAK_APP_ID)
+
+flatpak-install: flatpak
+	flatpak install --user --reinstall --yes $(FLATPAK_BUNDLE)
 
 lint: uv-sync
 	$(UV) ruff check .

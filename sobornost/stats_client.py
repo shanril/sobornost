@@ -67,9 +67,15 @@ def format_stats(data: dict) -> list[dict[str, str]]:
     Thumbnail.qml.
     """
     return [
-        {"text": f"Out: {_num(data, 'damage_dealt_per_second'):.1f} d/s", "color": COLOR_DPS_OUT},
-        {"text": f"In : {_num(data, 'damage_received_per_second'):.1f} d/s", "color": COLOR_DPS_IN},
-        {"text": f"Ore: {_num(data, 'mining_m3_per_second'):.1f} m³/s", "color": COLOR_ORE},
+        {"text": f"DPS out: {_num(data, 'damage_dealt_per_second'):.1f}", "color": COLOR_DPS_OUT},
+        {"text": f"DPS in: {_num(data, 'damage_received_per_second'):.1f}", "color": COLOR_DPS_IN},
+        {
+            "text": (
+                f"Ore: {_num(data, 'mining_m3'):,.0f} m³ "
+                f"({_num(data, 'mining_m3_per_second'):.1f} m³/s)"
+            ),
+            "color": COLOR_ORE,
+        },
     ]
 
 

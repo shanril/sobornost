@@ -40,7 +40,7 @@ else:
 
 setup_kwargs = dict(
     ext_modules=[ext],
-    install_requires=["pillow", "PySide6"],
+    install_requires=["pillow", "PySide6-Essentials"],
     package_data={"sobornost": ["qml/*.qml", "resources/*.png"]},
 )
 
@@ -190,4 +190,3 @@ if system == "Darwin":
         setup_kwargs["options"]["py2app"]["iconfile"] = icon_path
 
 setup(**setup_kwargs)
-

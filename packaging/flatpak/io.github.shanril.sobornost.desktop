@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Sobornost
+Comment=EVE Online client preview and switcher
+Exec=sobornost
+Icon=io.github.shanril.sobornost
+Terminal=false
+Categories=Game;Utility;
+StartupNotify=false

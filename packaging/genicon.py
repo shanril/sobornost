@@ -94,7 +94,7 @@ def draw_scanlines(draw, bbox, step, color):
 # ── Main draw ─────────────────────────────────────────────────────────────────
 
 def draw_icon(size: int) -> Image.Image:
-    S  = size
+    S  = size  # noqa: N806 - conventional scale factor used throughout the drawing code
     cx = S / 2
     cy = S / 2
 

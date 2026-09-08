@@ -1,0 +1,57 @@
+name: Flatpak
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Tests and static checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libxcb1-dev \
+            libxcb-damage0-dev \
+            libxcb-ewmh-dev \
+            libxcb-keysyms1-dev
+      - name: Install Sobornost and development tools
+        run: python -m pip install --editable . pytest ruff mypy
+      - name: Run tests
+        run: pytest
+      - name: Run Ruff
+        run: ruff check .
+      - name: Run mypy
+        run: mypy sobornost/
+
+  flatpak:
+    name: Build x86_64 bundle
+    needs: checks
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, validate, and upload bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/io.github.shanril.sobornost.yml
+          bundle: sobornost-x86_64.flatpak
+          artifact-name: sobornost-x86_64
+          arch: x86_64
+          run-tests: true
+          cache-key: flatpak-builder-x86_64-${{ hashFiles('packaging/flatpak/**', 'pyproject.toml', 'setup.py', 'sobornost/**') }}

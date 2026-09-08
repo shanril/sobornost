@@ -10,8 +10,17 @@ from sobornost._keycodes import KEY_CODES, MOD_BITS
 _KEY_BY_CODE: dict[int, str] = {v: k for k, v in KEY_CODES.items()}
 _MOD_NAMES_BY_BIT: dict[int, str] = {v: k for k, v in MOD_BITS.items()}
 
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "sobornost")
-CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+
+def _config_dir() -> str:
+    """Return the XDG configuration directory used by this process."""
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if not config_home:
+        config_home = os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(config_home, "sobornost")
+
+
+def _config_path() -> str:
+    return os.path.join(_config_dir(), "config.json")
 
 
 @dataclass
@@ -36,9 +45,10 @@ class Config:
 
     @classmethod
     def load(cls) -> Config:
-        if os.path.exists(CONFIG_PATH):
+        config_path = _config_path()
+        if os.path.exists(config_path):
             try:
-                with open(CONFIG_PATH) as f:
+                with open(config_path) as f:
                     data = json.load(f)
                 # Migrate old (int-based) hotkey format to new (name-based) format
                 mods = data.get("hotkey_modifiers")
@@ -57,6 +67,7 @@ class Config:
         return cls()
 
     def save(self) -> None:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(CONFIG_PATH, "w") as f:
+        config_dir = _config_dir()
+        os.makedirs(config_dir, exist_ok=True)
+        with open(os.path.join(config_dir, "config.json"), "w") as f:
             json.dump(asdict(self), f, indent=2)

@@ -1,0 +1,89 @@
+app-id: io.github.shanril.sobornost
+runtime: org.freedesktop.Platform
+runtime-version: "25.08"
+sdk: org.freedesktop.Sdk
+command: sobornost
+
+finish-args:
+  # Sobornost and EVE must use the same X11/XWayland display.
+  - --socket=x11
+  - --share=ipc
+  - --device=dri
+  # Used only when the optional statistics endpoint is enabled.
+  - --share=network
+  # QSystemTrayIcon uses KDE's StatusNotifier protocol on Plasma.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.kde.StatusNotifierItem-*
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/*.a
+  - /lib/*.la
+
+modules:
+  - name: xcb-util-wm
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+    sources:
+      - type: archive
+        url: https://xcb.freedesktop.org/dist/xcb-util-wm-0.4.2.tar.xz
+        sha256: 62c34e21d06264687faea7edbf63632c9f04d55e72114aa4a57bb95e4f888a0b
+
+  - name: xcb-util-keysyms
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+    sources:
+      - type: archive
+        url: https://xcb.freedesktop.org/dist/xcb-util-keysyms-0.4.1.tar.xz
+        sha256: 7c260a5294412aed429df1da2f8afd3bd07b7cba3fec772fba15a613a6d5c638
+
+  - name: python-dependencies
+    buildsystem: simple
+    build-commands:
+      - >-
+        python3 -m pip install --no-index --no-deps --prefix=/app
+        ./shiboken6-6.11.2-cp310-abi3-manylinux_2_34_x86_64.whl
+        ./pyside6_essentials-6.11.2-cp310-abi3-manylinux_2_34_x86_64.whl
+        ./pillow-12.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/a5/9a/f41bea4316d0c1bec4800842dcb4bd8fd3e29d6a79c496bc32e1aec42583/shiboken6-6.11.2-cp310-abi3-manylinux_2_34_x86_64.whl
+        sha256: 7a7a0a72a9ed26c9bf77d42246b1c736486befb8f31aa2fb29957ea4cdd1c1c2
+      - type: file
+        url: https://files.pythonhosted.org/packages/0e/1a/84a84bbc75835ee88abdcb66eb875b8e1a21834af9b833bc1893f2c1bfaf/pyside6_essentials-6.11.2-cp310-abi3-manylinux_2_34_x86_64.whl
+        sha256: aaf9f25f0f324874085fa5b26a610318db8a8e243cf85bb3e5400595191c7778
+      - type: file
+        url: https://files.pythonhosted.org/packages/f7/62/de5bdd77d935331f4f802edc11e4d82950f642caad6cb2f949837b8560e2/pillow-12.3.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+        sha256: 0847a763afefb695bc912d7c131e7e0632d4edc1d8698f58ddabec8e46b8b6d3
+
+  - name: sobornost
+    buildsystem: simple
+    build-commands:
+      - python3 -m pip install --no-index --no-deps --no-build-isolation --prefix=/app .
+      - install -Dm644 packaging/flatpak/io.github.shanril.sobornost.desktop /app/share/applications/io.github.shanril.sobornost.desktop
+      - install -Dm644 packaging/flatpak/io.github.shanril.sobornost.metainfo.xml /app/share/metainfo/io.github.shanril.sobornost.metainfo.xml
+      - install -Dm644 sobornost/resources/icon.png /app/share/icons/hicolor/128x128/apps/io.github.shanril.sobornost.png
+      - install -Dm644 LICENSE /app/share/licenses/io.github.shanril.sobornost/LICENSE
+    test-commands:
+      - desktop-file-validate /app/share/applications/io.github.shanril.sobornost.desktop
+      - appstreamcli validate --no-net /app/share/metainfo/io.github.shanril.sobornost.metainfo.xml
+      - >-
+        python3 -c "from PySide6 import QtQuick, QtWidgets;
+        from PIL import Image; import sobornost._native"
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .flatpak-builder
+          - .git
+          - .mypy_cache
+          - .pytest_cache
+          - .ruff_cache
+          - .venv
+          - build
+          - dist
+          - '*.egg-info'
+          - __pycache__

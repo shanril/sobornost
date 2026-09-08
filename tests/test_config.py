@@ -11,11 +11,10 @@ from sobornost.config import Config
 
 @pytest.fixture
 def tmp_config(tmp_path, monkeypatch):
-    """Redirect config storage to a temp dir so we never touch ~/.config."""
+    """Redirect XDG config storage so tests never touch the user's config."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     cfg_dir = tmp_path / "sobornost"
     cfg_path = cfg_dir / "config.json"
-    monkeypatch.setattr(config_mod, "CONFIG_DIR", str(cfg_dir))
-    monkeypatch.setattr(config_mod, "CONFIG_PATH", str(cfg_path))
     return cfg_path
 
 
@@ -48,6 +47,34 @@ def test_save_then_load_round_trips(tmp_config):
     assert tmp_config.exists()
     loaded = Config.load()
     assert loaded == c
+
+
+def test_config_path_honors_xdg_config_home(tmp_path, monkeypatch):
+    xdg_config_home = tmp_path / "xdg-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
+
+    assert config_mod._config_dir() == str(xdg_config_home / "sobornost")
+    assert config_mod._config_path() == str(xdg_config_home / "sobornost" / "config.json")
+
+
+def test_config_path_falls_back_to_home_dot_config(tmp_path, monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert config_mod._config_dir() == str(tmp_path / ".config" / "sobornost")
+    assert config_mod._config_path() == str(tmp_path / ".config" / "sobornost" / "config.json")
+
+
+def test_xdg_save_and_load_persist(tmp_path, monkeypatch):
+    xdg_config_home = tmp_path / "flatpak-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
+
+    expected_path = xdg_config_home / "sobornost" / "config.json"
+    config = Config(thumbnail_width=640, stats_enabled=True)
+    config.save()
+
+    assert expected_path.exists()
+    assert Config.load() == config
 
 
 def test_load_ignores_unknown_keys(tmp_config):

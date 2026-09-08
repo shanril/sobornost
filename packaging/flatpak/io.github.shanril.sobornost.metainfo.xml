@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.shanril.sobornost</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Sobornost</name>
+  <summary>EVE Online client preview and switcher</summary>
+  <description>
+    <p>
+      Sobornost detects EVE Online client windows, displays live thumbnail
+      previews, and lets players focus or minimize a client from its preview.
+    </p>
+    <p>
+      On Linux it uses XCB for window discovery, capture, focus, and global
+      hotkeys. It supports X11 and XWayland clients on the same display.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.shanril.sobornost.desktop</launchable>
+  <url type="homepage">https://github.com/shanril/sobornost</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-09-08" />
+  </releases>
+</component>
