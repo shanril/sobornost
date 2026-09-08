@@ -40,6 +40,30 @@ modules:
         url: https://xcb.freedesktop.org/dist/xcb-util-keysyms-0.4.1.tar.xz
         sha256: 7c260a5294412aed429df1da2f8afd3bd07b7cba3fec772fba15a613a6d5c638
 
+  # QtNetwork in the PySide6 wheel links against MIT Kerberos GSSAPI, which is
+  # not included in org.freedesktop.Platform.
+  - name: krb5
+    buildsystem: autotools
+    subdir: src
+    config-opts:
+      - --disable-static
+      - --disable-rpath
+      - --without-libedit
+      - --without-readline
+      - --without-system-verto
+    cleanup:
+      - /bin
+      - /sbin
+      - /share/doc
+      - /share/examples
+      - /share/man
+      - /include
+      - /lib/pkgconfig
+    sources:
+      - type: archive
+        url: https://kerberos.org/dist/krb5/1.22/krb5-1.22.2.tar.gz
+        sha256: 3243ffbc8ea4d4ac22ddc7dd2a1dc54c57874c40648b60ff97009763554eaf13
+
   - name: python-dependencies
     buildsystem: simple
     build-commands:
