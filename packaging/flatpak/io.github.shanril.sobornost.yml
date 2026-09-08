@@ -95,7 +95,7 @@ modules:
       - desktop-file-validate /app/share/applications/io.github.shanril.sobornost.desktop
       - appstreamcli validate --no-net /app/share/metainfo/io.github.shanril.sobornost.metainfo.xml
       - >-
-        python3 -c "from PySide6 import QtQuick, QtWidgets;
+        cd /app && python3 -c "from PySide6 import QtQuick, QtWidgets;
         from PIL import Image; import sobornost._native"
     sources:
       - type: dir
