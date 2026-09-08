@@ -13,7 +13,8 @@ finish-args:
   - --share=network
   # QSystemTrayIcon uses KDE's StatusNotifier protocol on Plasma.
   - --talk-name=org.kde.StatusNotifierWatcher
-  - --own-name=org.kde.StatusNotifierItem-*
+  # The sandboxed application process is PID 2 and creates one tray item.
+  - --own-name=org.kde.StatusNotifierItem-2-1
 
 cleanup:
   - /include
