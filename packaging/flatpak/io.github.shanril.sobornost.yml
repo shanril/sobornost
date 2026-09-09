@@ -97,7 +97,11 @@ modules:
       - appstreamcli validate --no-net /app/share/metainfo/io.github.shanril.sobornost.metainfo.xml
       - >-
         cd /app && python3 -c "from PySide6 import QtQuick, QtWidgets;
-        from PIL import Image; import sobornost._native"
+        from PySide6.QtGui import QIcon; from PIL import Image;
+        import os; import sobornost._native; from sobornost import resource_path;
+        icon_path = resource_path('resources/icon.png');
+        assert os.path.isfile(icon_path), icon_path;
+        assert not QIcon(icon_path).isNull(), icon_path"
     sources:
       - type: dir
         path: ../..

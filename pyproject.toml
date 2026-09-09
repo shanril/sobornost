@@ -41,7 +41,7 @@ quote-style = "double"
 include = ["sobornost*"]
 
 [tool.setuptools.package-data]
-sobornost = ["qml/*.qml"]
+sobornost = ["qml/*.qml", "resources/*.png"]
 
 [tool.pytest.ini_options]
 # Tests run against the source tree and stub the native extension
