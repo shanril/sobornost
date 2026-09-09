@@ -22,6 +22,9 @@ jobs:
           cache: pip
       - name: Install native build dependencies
         run: |
+          sudo rm -f \
+            /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.list.save
           sudo apt-get update
           sudo apt-get install --yes \
             libxcb1-dev \
